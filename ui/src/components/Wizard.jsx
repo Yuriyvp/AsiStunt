@@ -118,7 +118,7 @@ export default function Wizard({ onComplete, sendCommand, energy = 0, componentS
         letterSpacing: '0.1em',
         padding: '0 1rem',
       }}>
-        Step {step + 1} of {STEPS.length} \u2014 {currentStep.label}
+        Step {step + 1} of {STEPS.length} — {currentStep.label}
       </div>
 
       {/* Step content */}

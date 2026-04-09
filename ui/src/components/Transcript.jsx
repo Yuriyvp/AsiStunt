@@ -60,7 +60,7 @@ function TurnBubble({ turn }) {
                 fontStyle: 'italic',
                 opacity: 0.6,
               }}
-              title="Interrupted \u2014 this part was not spoken"
+              title="Interrupted — this part was not spoken"
             >
               {turn.text.slice(turn.spokenText.length)}
             </span>

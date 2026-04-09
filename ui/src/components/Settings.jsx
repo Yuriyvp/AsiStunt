@@ -182,7 +182,7 @@ export default function Settings({ onClose, sendCommand, currentSettings = {} })
             padding: '0.25rem',
           }}
         >
-          \u2715
+          {'\u2715'}
         </button>
       </div>
 

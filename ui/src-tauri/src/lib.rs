@@ -22,12 +22,37 @@ fn send_command(state: tauri::State<SidecarState>, cmd: String) -> Result<(), St
 }
 
 fn spawn_python_sidecar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    // Find project root (ui/ parent)
-    let project_root = std::env::current_dir()
-        .unwrap_or_default()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from(".."));
+    // Find project root: try exe dir ancestors, then env var, then cwd heuristics
+    let project_root = std::env::var("VOICE_ASSISTANT_ROOT")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| {
+            // If exe is in ui/src-tauri/target/release/, walk up to project root
+            std::env::current_exe().ok().and_then(|exe| {
+                let mut dir = exe.parent()?.to_path_buf();
+                // Walk up until we find pyproject.toml
+                for _ in 0..6 {
+                    if dir.join("pyproject.toml").exists() {
+                        return Some(dir);
+                    }
+                    dir = dir.parent()?.to_path_buf();
+                }
+                None
+            })
+        })
+        .or_else(|| {
+            // Try cwd and cwd/..
+            let cwd = std::env::current_dir().ok()?;
+            if cwd.join("pyproject.toml").exists() {
+                return Some(cwd);
+            }
+            let parent = cwd.parent()?;
+            if parent.join("pyproject.toml").exists() {
+                return Some(parent.to_path_buf());
+            }
+            None
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("/home/winers/voice-assistant"));
 
     let venv_python = project_root.join(".venv/bin/python");
     let python_bin = if venv_python.exists() {

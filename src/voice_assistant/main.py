@@ -68,6 +68,8 @@ async def main() -> None:
     logger.info("Pipeline mode: %s", mode.value)
 
     # Command handler
+    loop = asyncio.get_event_loop()
+
     def handle_command(cmd: dict) -> None:
         cmd_type = cmd.get("cmd")
         logger.info("IPC command: %s", cmd_type)
@@ -91,6 +93,20 @@ async def main() -> None:
 
         elif cmd_type == "new_conversation":
             logger.info("New conversation")
+
+        elif cmd_type == "get_status":
+            logger.info("Status request — re-emitting all component states")
+            pm.emit_all_status()
+
+        elif cmd_type == "start_component":
+            component = cmd.get("component", "")
+            logger.info("Start component: %s", component)
+            asyncio.ensure_future(pm.start_component(component))
+
+        elif cmd_type == "stop_component":
+            component = cmd.get("component", "")
+            logger.info("Stop component: %s", component)
+            asyncio.ensure_future(pm.stop_component(component))
 
         elif cmd_type == "shutdown":
             logger.info("Shutdown requested via IPC")

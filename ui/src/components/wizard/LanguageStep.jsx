@@ -50,7 +50,7 @@ export default function LanguageStep({ defaultLanguages = ['hr', 'en'], onSelect
         Languages
       </h2>
       <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem', textAlign: 'center' }}>
-        Select 1\u20135 languages you'll use ({selected.size}/5)
+        Select 1–5 languages you'll use ({selected.size}/5)
       </p>
 
       <div style={{

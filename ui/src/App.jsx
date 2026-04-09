@@ -15,6 +15,111 @@ import Wizard from './components/Wizard';
 import DebugWindow from './components/DebugWindow';
 import './styles/theme.css';
 
+const appWindow = getCurrentWindow();
+
+function WindowControls() {
+  const [hovered, setHovered] = useState(null);
+
+  const handleMinimize = (e) => {
+    e.stopPropagation();
+    appWindow.minimize();
+  };
+  const handleMaximize = async (e) => {
+    e.stopPropagation();
+    if (await appWindow.isMaximized()) appWindow.unmaximize();
+    else appWindow.maximize();
+  };
+  const handleClose = (e) => {
+    e.stopPropagation();
+    appWindow.close();
+  };
+
+  const dots = [
+    { action: handleClose, color: '#ed6a5e', hoverColor: '#f1827a', label: 'Close', key: 'close' },
+    { action: handleMinimize, color: '#f5bf4f', hoverColor: '#f7cc6e', label: 'Minimize', key: 'min' },
+    { action: handleMaximize, color: '#56c453', hoverColor: '#74d172', label: 'Maximize', key: 'max' },
+  ];
+
+  return (
+    <div
+      style={{ display: 'flex', gap: 7, alignItems: 'center', padding: '0 2px' }}
+      onMouseLeave={() => setHovered(null)}
+    >
+      {dots.map(d => (
+        <button
+          key={d.key}
+          onClick={d.action}
+          onMouseEnter={() => setHovered(d.key)}
+          aria-label={d.label}
+          title={d.label}
+          style={{
+            width: 13,
+            height: 13,
+            borderRadius: '50%',
+            border: '0.5px solid rgba(0,0,0,0.15)',
+            cursor: 'pointer',
+            padding: 0,
+            background: hovered === d.key ? d.hoverColor : d.color,
+            transition: 'background 0.1s, transform 0.1s',
+            transform: hovered === d.key ? 'scale(1.15)' : 'scale(1)',
+            outline: 'none',
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TitleBar({ children, onDoubleClick }) {
+  const handleMouseDown = async (e) => {
+    // Only drag on left-click on the bar itself or drag-region children
+    if (e.button !== 0) return;
+    const el = e.target;
+    const isInteractive = el.closest('button, input, select, a, [role="button"]');
+    if (isInteractive) return;
+
+    // If maximized, unmaximize first so user can reposition
+    try {
+      if (await appWindow.isMaximized()) {
+        await appWindow.unmaximize();
+      }
+    } catch {}
+
+    appWindow.startDragging();
+  };
+
+  return (
+    <div
+      onMouseDown={handleMouseDown}
+      onDoubleClick={onDoubleClick}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        padding: '6px 10px',
+        gap: '0.6rem',
+        background: 'var(--bg-secondary)',
+        borderBottom: '1px solid var(--bg-surface)',
+        minHeight: 38,
+        cursor: 'grab',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+const titleBtnStyle = {
+  background: 'none',
+  border: 'none',
+  color: 'var(--text-muted)',
+  fontSize: '0.85rem',
+  cursor: 'pointer',
+  padding: '2px 5px',
+  opacity: 0.6,
+  transition: 'opacity 0.15s, color 0.15s',
+  lineHeight: 1,
+};
+
 const COMPACT_SIZE = { width: 300, height: 400 };
 const EXPANDED_SIZE = { width: 500, height: 700 };
 
@@ -52,6 +157,144 @@ function LanguageBadge({ language }) {
       }}
     >
       {display}
+    </div>
+  );
+}
+
+const COMPONENTS = [
+  { key: 'llm', label: 'LLM', icon: '\uD83E\uDDE0' },
+  { key: 'tts', label: 'TTS', icon: '\uD83D\uDD0A' },
+  { key: 'asr', label: 'ASR', icon: '\uD83C\uDF99' },
+  { key: 'vad', label: 'VAD', icon: '\uD83D\uDC42' },
+];
+
+const STATUS_COLORS = {
+  idle: 'var(--text-muted)',
+  starting: '#f5bf4f',
+  stopping: '#f5bf4f',
+  ready: '#56c453',
+  restarting: '#f5bf4f',
+  restarting_optimized: '#cc8844',
+  error: '#ed6a5e',
+  failed: '#ed6a5e',
+};
+
+const STATUS_LABELS = {
+  idle: 'Not loaded',
+  starting: 'Loading…',
+  stopping: 'Stopping…',
+  ready: 'Ready',
+  restarting: 'Restarting…',
+  restarting_optimized: 'Optimizing…',
+  error: 'Error',
+  failed: 'Failed',
+};
+
+function ComponentStatus({ componentStates, sendCommand, compact = false }) {
+  const allReady = COMPONENTS.every(c => componentStates[c.key] === 'ready');
+
+  if (compact && allReady) return null;
+
+  const actionBtnStyle = {
+    background: 'none',
+    border: '1px solid var(--text-muted)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-secondary)',
+    fontSize: '0.6rem',
+    padding: '1px 6px',
+    cursor: 'pointer',
+    lineHeight: '1.4',
+    transition: 'all 0.15s',
+    textTransform: 'uppercase',
+    letterSpacing: '0.03em',
+  };
+
+  return (
+    <div style={{
+      display: 'flex',
+      gap: compact ? '0.5rem' : '0.5rem',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: compact ? '0.25rem 0.5rem' : '0.4rem 0.75rem',
+      flexWrap: 'wrap',
+      borderBottom: compact ? 'none' : '1px solid var(--bg-surface)',
+      background: compact ? 'transparent' : 'var(--bg-secondary)',
+    }}>
+      {COMPONENTS.map(comp => {
+        const s = componentStates[comp.key] || 'idle';
+        const color = STATUS_COLORS[s] || 'var(--text-muted)';
+        const isLoading = s === 'starting' || s === 'restarting' || s === 'restarting_optimized' || s === 'stopping';
+        const isRunning = s === 'ready';
+        const isStopped = s === 'idle' || s === 'error' || s === 'failed';
+
+        return (
+          <div
+            key={comp.key}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.25rem',
+              fontSize: compact ? '0.7rem' : '0.75rem',
+              color: 'var(--text-secondary)',
+              background: compact ? 'none' : 'var(--bg-primary)',
+              borderRadius: 'var(--radius-sm)',
+              padding: compact ? '0' : '3px 8px',
+            }}
+          >
+            <span style={{ fontSize: compact ? '0.75rem' : '0.85rem' }}>{comp.icon}</span>
+            <span style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: color,
+              display: 'inline-block',
+              flexShrink: 0,
+              animation: isLoading ? 'pulse 1.2s ease-in-out infinite' : 'none',
+              boxShadow: isRunning ? `0 0 4px ${color}` : 'none',
+            }} />
+            {!compact && (
+              <>
+                <span style={{ color, fontSize: '0.65rem', minWidth: 48 }}>
+                  {STATUS_LABELS[s] || s}
+                </span>
+                {isStopped && (
+                  <button
+                    onClick={() => sendCommand({ cmd: 'start_component', component: comp.key })}
+                    style={{
+                      ...actionBtnStyle,
+                      borderColor: 'var(--mic-listening)',
+                      color: 'var(--mic-listening)',
+                    }}
+                    onMouseEnter={e => { e.target.style.background = 'var(--mic-listening)'; e.target.style.color = 'var(--bg-primary)'; }}
+                    onMouseLeave={e => { e.target.style.background = 'none'; e.target.style.color = 'var(--mic-listening)'; }}
+                    title={`Load ${comp.label}`}
+                  >
+                    Load
+                  </button>
+                )}
+                {isRunning && (
+                  <button
+                    onClick={() => sendCommand({ cmd: 'stop_component', component: comp.key })}
+                    style={{
+                      ...actionBtnStyle,
+                      borderColor: 'var(--mic-muted)',
+                      color: 'var(--mic-muted)',
+                    }}
+                    onMouseEnter={e => { e.target.style.background = 'var(--mic-muted)'; e.target.style.color = 'var(--bg-primary)'; }}
+                    onMouseLeave={e => { e.target.style.background = 'none'; e.target.style.color = 'var(--mic-muted)'; }}
+                    title={`Stop ${comp.label}`}
+                  >
+                    Stop
+                  </button>
+                )}
+                {isLoading && (
+                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>…</span>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -105,6 +348,7 @@ export default function App() {
     'state_change', 'filler_played',
     'request_start', 'first_token', 'complete',
     'synth_start', 'synth_end',
+    'process_state_change',
   ]);
 
   const [showWizard, setShowWizard] = useState(() => {
@@ -121,19 +365,49 @@ export default function App() {
   const [energy, setEnergy] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const [turns, setTurns] = useState([]);
+  const [componentStates, setComponentStates] = useState({
+    llm: 'idle', tts: 'idle', asr: 'idle', vad: 'idle',
+  });
   const turnIdRef = useRef(0);
+
+  // Request component status on mount (catches up after startup race)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      sendCommand({ cmd: 'get_status' });
+    }, 1000);
+    // Also poll periodically in case sidecar was slow to start
+    const interval = setInterval(() => {
+      const allIdle = Object.values(componentStates).every(s => s === 'idle');
+      if (allIdle) sendCommand({ cmd: 'get_status' });
+    }, 3000);
+    return () => { clearTimeout(timer); clearInterval(interval); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Process incoming signals
   useEffect(() => {
     if (signals.input_level) setEnergy(signals.input_level.level || 0);
     if (signals.mood_change) setMood(signals.mood_change.mood || 'neutral');
     if (signals.language_detected) setLanguage(signals.language_detected.language || null);
+    if (signals.process_state_change) {
+      const sig = signals.process_state_change;
+      if (sig.component && sig.state && sig.component !== 'system') {
+        setComponentStates(prev => ({ ...prev, [sig.component]: sig.state }));
+      }
+    }
   }, [signals]);
 
   // Track turns from events
   useEffect(() => {
     if (events.length === 0) return;
     const last = events[events.length - 1];
+
+    if (last.event === 'signal' && last.type === 'process_state_change') {
+      const comp = last.component;
+      const s = last.state;
+      if (comp && s && comp !== 'system') {
+        setComponentStates(prev => ({ ...prev, [comp]: s }));
+      }
+    }
 
     if (last.event === 'transcript') {
       if (last.role === 'user') {
@@ -294,7 +568,6 @@ export default function App() {
   if (!expanded) {
     return (
       <div
-        data-tauri-drag-region
         onContextMenu={handleContextMenu}
         onClick={contextMenu ? closeContextMenu : undefined}
         style={{
@@ -302,49 +575,70 @@ export default function App() {
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 'var(--spacing-lg)',
           position: 'relative',
           background: 'var(--bg-primary)',
         }}
       >
+        {/* Draggable title bar with window controls */}
+        <TitleBar>
+          <WindowControls />
+          <div style={{ flex: 1, minHeight: 24 }} />
+          <button
+            onClick={() => setShowDebug(prev => !prev)}
+            aria-label="Debug dashboard"
+            title="Debug"
+            style={titleBtnStyle}
+            onMouseEnter={e => { e.target.style.opacity = 1; e.target.style.color = 'var(--orb-processing)'; }}
+            onMouseLeave={e => { e.target.style.opacity = 0.6; e.target.style.color = 'var(--text-muted)'; }}
+          >
+            {'\u2699'}
+          </button>
+          <button
+            onClick={() => { if (!expanded) toggleExpanded(); setShowSettings(true); }}
+            aria-label="Settings"
+            title="Settings"
+            style={titleBtnStyle}
+            onMouseEnter={e => { e.target.style.opacity = 1; e.target.style.color = 'var(--text-primary)'; }}
+            onMouseLeave={e => { e.target.style.opacity = 0.6; e.target.style.color = 'var(--text-muted)'; }}
+          >
+            {'\u2630'}
+          </button>
+          <button
+            onClick={toggleExpanded}
+            aria-label="Expand to full view"
+            title="Expand"
+            style={titleBtnStyle}
+            onMouseEnter={e => { e.target.style.opacity = 1; }}
+            onMouseLeave={e => { e.target.style.opacity = 0.6; }}
+          >
+            {'\u2922'}
+          </button>
+        </TitleBar>
+
         <LanguageBadge language={language} />
         <MoodGlow mood={mood} />
 
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 'var(--spacing-md)',
+        }}>
           <Orb state={state} mood={mood} energy={energy} size={180} />
         </div>
 
+        <ComponentStatus componentStates={componentStates} sendCommand={sendCommand} compact />
         <StatusLine state={state} />
 
-        <div style={{ marginTop: 'var(--spacing-sm)', marginBottom: 'var(--spacing-sm)' }}>
+        <div style={{
+          padding: '0 var(--spacing-md) var(--spacing-md)',
+          display: 'flex',
+          justifyContent: 'center',
+        }}>
           <MicPill micState={micState} onStateChange={handleMicChange} />
         </div>
-
-        {/* Expand button */}
-        <button
-          onClick={toggleExpanded}
-          aria-label="Expand to full view"
-          style={{
-            position: 'absolute',
-            bottom: 8,
-            right: 8,
-            background: 'none',
-            border: 'none',
-            color: 'var(--text-muted)',
-            fontSize: '1rem',
-            cursor: 'pointer',
-            padding: '4px',
-            opacity: 0.5,
-            transition: 'opacity 0.2s',
-          }}
-          onMouseEnter={e => e.target.style.opacity = 1}
-          onMouseLeave={e => e.target.style.opacity = 0.5}
-          title="Expand"
-        >
-          \u2922
-        </button>
 
         <LastExchange lastUser={lastUser} lastAssistant={lastAssistant} />
 
@@ -385,47 +679,57 @@ export default function App() {
         overflow: 'hidden',
       }}
     >
-      {/* Top bar — drag region + orb + controls */}
-      <div
-        data-tauri-drag-region
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '0.5rem 0.75rem',
-          gap: '0.75rem',
-          borderBottom: '1px solid var(--bg-surface)',
-          background: 'var(--bg-secondary)',
-          minHeight: 56,
-        }}
-      >
-        <Orb state={state} mood={mood} energy={energy} size={40} />
+      {/* Title bar — draggable with window controls */}
+      <TitleBar onDoubleClick={async () => {
+        if (await appWindow.isMaximized()) appWindow.unmaximize();
+        else appWindow.maximize();
+      }}>
+        <WindowControls />
 
-        <div style={{ flex: 1 }}>
-          <StatusLine state={state} />
+        <div style={{ display: 'flex', alignItems: 'center', flex: 1, gap: '0.6rem' }}>
+          <Orb state={state} mood={mood} energy={energy} size={32} />
+          <div style={{ flex: 1 }}>
+            <StatusLine state={state} />
+          </div>
         </div>
 
-        <LanguageBadge language={language} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <LanguageBadge language={language} />
+          <MicPill micState={micState} onStateChange={handleMicChange} />
+          <button
+            onClick={() => setShowDebug(prev => !prev)}
+            aria-label="Debug dashboard"
+            title="Debug"
+            style={titleBtnStyle}
+            onMouseEnter={e => { e.target.style.opacity = 1; e.target.style.color = 'var(--orb-processing)'; }}
+            onMouseLeave={e => { e.target.style.opacity = 0.6; e.target.style.color = 'var(--text-muted)'; }}
+          >
+            {'\u2699'}
+          </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            aria-label="Settings"
+            title="Settings"
+            style={titleBtnStyle}
+            onMouseEnter={e => { e.target.style.opacity = 1; e.target.style.color = 'var(--text-primary)'; }}
+            onMouseLeave={e => { e.target.style.opacity = 0.6; e.target.style.color = 'var(--text-muted)'; }}
+          >
+            {'\u2630'}
+          </button>
+          <button
+            onClick={toggleExpanded}
+            aria-label="Collapse to compact view"
+            title="Compact"
+            style={titleBtnStyle}
+            onMouseEnter={e => { e.target.style.opacity = 1; }}
+            onMouseLeave={e => { e.target.style.opacity = 0.6; }}
+          >
+            {'\u2923'}
+          </button>
+        </div>
+      </TitleBar>
 
-        <MicPill micState={micState} onStateChange={handleMicChange} />
-
-        {/* Collapse button */}
-        <button
-          onClick={toggleExpanded}
-          aria-label="Collapse to compact view"
-          style={{
-            background: 'none',
-            border: 'none',
-            color: 'var(--text-secondary)',
-            fontSize: '1.1rem',
-            cursor: 'pointer',
-            padding: '0.25rem',
-          }}
-          title="Compact"
-        >
-          \u2923
-        </button>
-      </div>
-
+      <ComponentStatus componentStates={componentStates} sendCommand={sendCommand} />
       <MoodGlow mood={mood} />
 
       {/* Transcript */}

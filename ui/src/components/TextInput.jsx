@@ -32,7 +32,7 @@ export default function TextInput({ onSubmit, disabled = false }) {
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Type a message\u2026"
+        placeholder="Type a message…"
         disabled={disabled}
         style={{
           flex: 1,

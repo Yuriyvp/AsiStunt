@@ -28,7 +28,7 @@ export default function VoicePreviewStep({ sendCommand, cloneProgress = null }) 
       {cloneProgress !== null && cloneProgress < 100 && (
         <div style={{ marginBottom: '1rem', maxWidth: 260, margin: '0 auto 1rem' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-            Cloning voice\u2026 {Math.round(cloneProgress)}%
+            Cloning voice… {Math.round(cloneProgress)}%
           </div>
           <div style={{
             width: '100%',

@@ -131,3 +131,8 @@ a:focus-visible {
 [data-tauri-drag-region]:active {
   cursor: grabbing;
 }
+
+/* Ensure interactive elements inside drag regions receive clicks */
+button, input, select, textarea, a, [role="button"], [role="switch"] {
+  -webkit-app-region: no-drag;
+}

@@ -168,6 +168,13 @@ class ProcessManager:
 
         # Component references (set during startup)
         self._llm_process: LlamaCppProcess | None = None
+        self._component_states: dict[str, str] = {
+            "llm": "idle", "tts": "idle", "asr": "idle", "vad": "idle",
+        }
+        # Actual model instances
+        self._tts = None
+        self._asr = None
+        self._vad = None
 
     @property
     def mode(self) -> PipelineMode:
@@ -176,6 +183,18 @@ class ProcessManager:
     @property
     def llm_process(self) -> LlamaCppProcess | None:
         return self._llm_process
+
+    def _set_component_state(self, component: str, state: str) -> None:
+        """Update internal state and emit signal."""
+        self._component_states[component] = state
+        self._ipc.emit_signal("process_state_change", component=component, state=state)
+
+    def emit_all_status(self) -> None:
+        """Re-emit current state for all components. Called when frontend connects."""
+        for comp, state in self._component_states.items():
+            self._ipc.emit_signal("process_state_change", component=comp, state=state)
+        self._ipc.emit_signal("process_state_change",
+                              component="system", state=self._mode.value)
 
     async def startup(self) -> PipelineMode:
         """Execute full startup sequence. Returns the resulting PipelineMode."""
@@ -209,7 +228,7 @@ class ProcessManager:
                     self._ipc.emit_signal("voice_clone_progress", status="complete")
 
             # Step 2: llama.cpp server
-            self._ipc.emit_signal("process_state_change", component="llm", state="starting")
+            self._set_component_state("llm", "starting")
             self._llm_process = LlamaCppProcess(
                 server_binary=str(Path(self._soul.llm_model).parent.parent / "bin" / "llama-server"),
                 model_path=self._soul.llm_model,
@@ -223,26 +242,51 @@ class ProcessManager:
             try:
                 await self._llm_process.start()
                 llm_ok = True
-                self._ipc.emit_signal("process_state_change", component="llm", state="ready")
+                self._set_component_state("llm", "ready")
             except Exception as e:
                 logger.error("LLM startup failed: %s", e)
                 self._ipc.emit_error("llm", f"Failed to start: {e}")
+                self._set_component_state("llm", "error")
                 self._llm_process = None
 
-            # Step 3: TTS load (OmniVoice) — would be loaded here
-            # For now, mark as ready if we can import it
+            # Step 3: TTS load (OmniVoice)
+            self._set_component_state("tts", "starting")
             try:
-                self._ipc.emit_signal("process_state_change", component="tts", state="starting")
-                # TTS loading happens in the orchestrator when it initializes OmniVoiceTTS
+                from voice_assistant.adapters.omnivoice_tts import OmniVoiceTTS
+                self._tts = OmniVoiceTTS()
+                await self._tts.load(
+                    self._soul.voice_method,
+                    self._soul.voice_description,
+                    None,  # profile_path — set later if clone
+                )
                 tts_ok = True
-                self._ipc.emit_signal("process_state_change", component="tts", state="ready")
+                self._set_component_state("tts", "ready")
             except Exception as e:
                 logger.error("TTS startup failed: %s", e)
                 self._ipc.emit_error("tts", f"Failed to start: {e}")
+                self._set_component_state("tts", "error")
+                self._tts = None
 
-            # Step 4: CPU models (VAD, ASR) — loaded by orchestrator, no VRAM
-            self._ipc.emit_signal("process_state_change", component="vad", state="ready")
-            self._ipc.emit_signal("process_state_change", component="asr", state="ready")
+            # Step 4: CPU models
+            self._set_component_state("vad", "starting")
+            try:
+                from voice_assistant.models.silero_vad import SileroVAD
+                self._vad = SileroVAD()
+                self._set_component_state("vad", "ready")
+            except Exception as e:
+                logger.error("VAD startup failed: %s", e)
+                self._set_component_state("vad", "error")
+                self._vad = None
+
+            self._set_component_state("asr", "starting")
+            try:
+                from voice_assistant.adapters.parakeet_asr import ParakeetASR
+                self._asr = ParakeetASR()
+                self._set_component_state("asr", "ready")
+            except Exception as e:
+                logger.error("ASR startup failed: %s", e)
+                self._set_component_state("asr", "error")
+                self._asr = None
 
         except Exception as e:
             logger.exception("Startup failed: %s", e)
@@ -355,6 +399,96 @@ class ProcessManager:
         self._ipc.emit_signal("process_state_change",
                               component="system", state=self._mode.value)
         return self._mode
+
+    async def start_component(self, component: str) -> str:
+        """Start a single component. Returns its new state ('ready' or 'error')."""
+        self._set_component_state(component, "starting")
+        try:
+            if component == "llm":
+                if self._llm_process and self._llm_process.is_running:
+                    self._set_component_state("llm", "ready")
+                    return "ready"
+                self._llm_process = LlamaCppProcess(
+                    server_binary=str(Path(self._soul.llm_model).parent.parent / "bin" / "llama-server"),
+                    model_path=self._soul.llm_model,
+                    port=self._soul.llm_port,
+                    ctx_size=self._soul.llm_ctx_size,
+                    gpu_layers=self._soul.llm_gpu_layers,
+                    threads=self._soul.llm_threads,
+                    batch_size=self._soul.llm_batch_size,
+                    flash_attn=self._soul.llm_flash_attn,
+                )
+                await self._llm_process.start()
+
+            elif component == "tts":
+                if self._tts is not None:
+                    self._set_component_state("tts", "ready")
+                    return "ready"
+                from voice_assistant.adapters.omnivoice_tts import OmniVoiceTTS
+                self._tts = OmniVoiceTTS()
+                await self._tts.load(
+                    self._soul.voice_method,
+                    self._soul.voice_description,
+                    None,
+                )
+
+            elif component == "asr":
+                if self._asr is not None:
+                    self._set_component_state("asr", "ready")
+                    return "ready"
+                from voice_assistant.adapters.parakeet_asr import ParakeetASR
+                self._asr = ParakeetASR()
+
+            elif component == "vad":
+                if self._vad is not None:
+                    self._set_component_state("vad", "ready")
+                    return "ready"
+                from voice_assistant.models.silero_vad import SileroVAD
+                self._vad = SileroVAD()
+
+            else:
+                self._set_component_state(component, "error")
+                return "error"
+
+            self._set_component_state(component, "ready")
+            self._recalculate_mode()
+            return "ready"
+
+        except Exception as e:
+            logger.error("Failed to start %s: %s", component, e)
+            self._ipc.emit_error(component, f"Failed to start: {e}")
+            self._set_component_state(component, "error")
+            self._recalculate_mode()
+            return "error"
+
+    async def stop_component(self, component: str) -> str:
+        """Stop a single component. Returns 'idle'."""
+        self._set_component_state(component, "stopping")
+        try:
+            if component == "llm" and self._llm_process:
+                await self._llm_process.stop()
+                self._llm_process = None
+            elif component == "tts" and self._tts:
+                await self._tts.shutdown()
+                self._tts = None
+            elif component == "asr" and self._asr:
+                await self._asr.shutdown()
+                self._asr = None
+            elif component == "vad" and self._vad:
+                self._vad = None
+        except Exception as e:
+            logger.error("Failed to stop %s: %s", component, e)
+
+        self._set_component_state(component, "idle")
+        self._recalculate_mode()
+        return "idle"
+
+    def _recalculate_mode(self) -> None:
+        """Recalculate and emit pipeline mode based on running components."""
+        llm_ok = self._llm_process is not None and self._llm_process.is_running
+        tts_ok = self._mode in (PipelineMode.FULL, PipelineMode.TRANSCRIBE)
+        self._mode = self._determine_mode(llm_ok, tts_ok)
+        self._ipc.emit_signal("process_state_change", component="system", state=self._mode.value)
 
     async def shutdown(self) -> None:
         """Shut down all managed processes."""
