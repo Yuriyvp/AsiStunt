@@ -61,6 +61,7 @@ html, body, #root {
   overflow: hidden;
   background: var(--bg-primary);
   color: var(--text-primary);
+  color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
@@ -88,6 +89,12 @@ html, body, #root {
 /* Inputs inherit dark theme */
 input, select, button {
   font-family: inherit;
+  color-scheme: dark;
+}
+
+select option {
+  background: #1a1a25;
+  color: #e8e8f0;
 }
 
 /* Focus ring — visible keyboard focus for all interactive elements */

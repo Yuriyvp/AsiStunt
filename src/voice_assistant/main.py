@@ -16,6 +16,130 @@ import sys
 logger = logging.getLogger("voice_assistant")
 
 
+def _list_pipewire_devices():
+    """Query PipeWire via wpctl for sources (mics) and sinks (speakers)."""
+    import re
+    import subprocess
+
+    result = subprocess.run(
+        ["wpctl", "status"], capture_output=True, text=True, timeout=5
+    )
+    lines = result.stdout.splitlines()
+
+    sources = []  # microphones
+    sinks = []    # speakers
+    default_source = -1
+    default_sink = -1
+
+    section = None
+    for line in lines:
+        # Check for section headers anywhere in the line
+        if "Sinks:" in line and "Sink endpoints" not in line:
+            section = "sinks"
+            continue
+        elif "Sources:" in line and "Source endpoints" not in line:
+            section = "sources"
+            continue
+        elif "Sink endpoints:" in line or "Source endpoints:" in line:
+            section = None
+            continue
+        elif "Streams:" in line or "Devices:" in line or "Clients:" in line:
+            section = None
+            continue
+        elif "Video" in line:
+            break
+
+        if section:
+            # Match device lines like:
+            #  │  *   42. fifine Microphone Analog Stereo     [vol: 1.00]
+            #  │      51. GA102 HD Audio Digital Stereo (HDMI) [vol: 0.72]
+            m = re.search(r'(\*?)\s*(\d+)\.\s+(.+?)(?:\s+\[vol:.*\])?\s*$', line)
+            if m:
+                is_default = m.group(1) == '*'
+                dev_id = int(m.group(2))
+                name = m.group(3).strip()
+                if not name:
+                    continue
+                entry = {"id": dev_id, "name": name}
+                if section == "sources":
+                    sources.append(entry)
+                    if is_default:
+                        default_source = dev_id
+                elif section == "sinks":
+                    sinks.append(entry)
+                    if is_default:
+                        default_sink = dev_id
+
+    return sources, sinks, default_source, default_sink
+
+
+async def _test_mic(emitter, device_id=None):
+    """Record 3 seconds from default mic, emit live RMS levels."""
+    import sounddevice as sd
+    import numpy as np
+    import threading
+    import time
+
+    try:
+        sr = 16000
+        duration = 3.0
+        levels = []
+        lock = threading.Lock()
+
+        def callback(indata, frames, time_info, status):
+            rms = float(np.sqrt(np.mean(indata ** 2)))
+            level = min(1.0, rms * 10)
+            with lock:
+                levels.append(level)
+            emitter.emit_signal("mic_test", status="level", level=level)
+
+        emitter.emit_signal("mic_test", status="recording")
+
+        def record():
+            # Always use system default — PipeWire routes to selected device
+            with sd.InputStream(samplerate=sr, channels=1, dtype='float32',
+                                blocksize=int(sr * 0.1), callback=callback):
+                time.sleep(duration)
+
+        await asyncio.get_running_loop().run_in_executor(None, record)
+
+        with lock:
+            all_levels = list(levels)
+        emitter.emit_signal("mic_test", status="done", levels=all_levels)
+    except Exception as e:
+        logger.error("Mic test failed: %s", e)
+        emitter.emit_signal("mic_test", status="error", message=str(e))
+
+
+async def _test_speaker(emitter, device_id=None):
+    """Play a short test tone on system default speaker."""
+    import sounddevice as sd
+    import numpy as np
+
+    try:
+        sr = 44100
+        duration = 1.0
+        emitter.emit_signal("speaker_test", status="playing")
+
+        t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+        # Pleasant two-tone chime
+        tone = (0.3 * np.sin(2 * np.pi * 880 * t) +
+                0.2 * np.sin(2 * np.pi * 1320 * t)).astype(np.float32)
+        # Fade in/out
+        fade = int(sr * 0.05)
+        tone[:fade] *= np.linspace(0, 1, fade)
+        tone[-fade:] *= np.linspace(1, 0, fade)
+
+        # Use system default — PipeWire routes to selected device
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: sd.play(tone, samplerate=sr, blocking=True)
+        )
+        emitter.emit_signal("speaker_test", status="done")
+    except Exception as e:
+        logger.error("Speaker test failed: %s", e)
+        emitter.emit_signal("speaker_test", status="error", message=str(e))
+
+
 async def main() -> None:
     # Logging to stderr — stdout is IPC only
     logging.basicConfig(
@@ -67,6 +191,79 @@ async def main() -> None:
     mode = await pm.startup()
     logger.info("Pipeline mode: %s", mode.value)
 
+    # Wire up the orchestrator with all loaded components
+    orch = None
+    if pm._llm_process and pm._tts and pm._asr and pm._vad:
+        try:
+            from voice_assistant.core.orchestrator import Orchestrator
+            from voice_assistant.core.audio_input import AudioInput
+            from voice_assistant.core.audio_output import Playlist, PlaybackManager, FillerCache
+            from voice_assistant.adapters.llamacpp_llm import LlamaCppLLM
+
+            audio_input = AudioInput()
+            playlist = Playlist()
+            playback = PlaybackManager(playlist)
+            filler_cache = FillerCache()
+            llm = LlamaCppLLM(f"http://127.0.0.1:{pm._llm_process.port}")
+
+            orch = Orchestrator(
+                audio_input=audio_input,
+                vad=pm._vad,
+                asr=pm._asr,
+                llm=llm,
+                tts=pm._tts,
+                playlist=playlist,
+                playback=playback,
+                filler_cache=filler_cache,
+            )
+
+            # Wire orchestrator state changes to IPC
+            def on_state_change(old_state, new_state):
+                emitter.emit_state_change(new_state.value)
+            orch._state._on_change = on_state_change
+
+            # Wire LLM token streaming to IPC
+            original_llm_stream = llm.stream
+            async def stream_with_ipc(messages, sampling=None):
+                async for token in original_llm_stream(messages, sampling):
+                    emitter.emit_token(token)
+                    yield token
+            llm.stream = stream_with_ipc
+
+            # Wire transcript events — patch _process_voice_turn and handle_text_input
+            original_handle_text = orch.handle_text_input
+            async def handle_text_with_ipc(text):
+                emitter.emit({"event": "transcript", "role": "user", "text": text, "source": "text"})
+                await original_handle_text(text)
+                if orch._dialogue and orch._dialogue[-1].role == "assistant":
+                    t = orch._dialogue[-1]
+                    emitter.emit({"event": "transcript", "role": "assistant",
+                                  "text": t.content, "source": t.source,
+                                  "interrupted": t.interrupted, "spoken_text": t.partial})
+            orch.handle_text_input = handle_text_with_ipc
+
+            original_voice_turn = orch._process_voice_turn
+            async def voice_turn_with_ipc(audio):
+                await original_voice_turn(audio)
+                # Emit both user transcript and assistant response
+                for t in orch._dialogue[-2:]:
+                    if t.role == "user":
+                        emitter.emit({"event": "transcript", "role": "user",
+                                      "text": t.content, "source": t.source})
+                    elif t.role == "assistant":
+                        emitter.emit({"event": "transcript", "role": "assistant",
+                                      "text": t.content, "source": t.source,
+                                      "interrupted": t.interrupted, "spoken_text": t.partial})
+            orch._process_voice_turn = voice_turn_with_ipc
+
+            await orch.start()
+            logger.info("Orchestrator started — full pipeline active")
+        except Exception as e:
+            logger.error("Failed to start orchestrator: %s", e)
+            orch = None
+    else:
+        logger.warning("Not all components available — orchestrator not started")
+
     # Command handler
     loop = asyncio.get_event_loop()
 
@@ -75,10 +272,12 @@ async def main() -> None:
         logger.info("IPC command: %s", cmd_type)
 
         if cmd_type == "text_input":
-            content = cmd.get("content", "")
-            if content:
-                logger.info("Text input: %s", content[:80])
-                # Will be routed to orchestrator.handle_text_input() when wired
+            text = cmd.get("text") or cmd.get("content", "")
+            if text and orch:
+                logger.info("Text input: %s", text[:80])
+                asyncio.ensure_future(orch.handle_text_input(text))
+            elif text:
+                logger.warning("Text input but orchestrator not running")
 
         elif cmd_type == "set_mode":
             new_mode = cmd.get("mode", "")
@@ -90,9 +289,43 @@ async def main() -> None:
 
         elif cmd_type == "mute_toggle":
             logger.info("Mute toggle")
+            if orch and orch._audio:
+                # Toggle audio input mute
+                orch._audio._muted = not getattr(orch._audio, '_muted', False)
 
         elif cmd_type == "new_conversation":
             logger.info("New conversation")
+            if orch:
+                orch._dialogue.clear()
+
+        elif cmd_type == "list_audio_devices":
+            logger.info("Audio device list requested")
+            try:
+                inputs, outputs, def_in, def_out = _list_pipewire_devices()
+                emitter.emit_signal("audio_devices",
+                                    inputs=inputs, outputs=outputs,
+                                    default_input=def_in,
+                                    default_output=def_out)
+            except Exception as e:
+                logger.error("Failed to list audio devices: %s", e)
+                emitter.emit_signal("audio_devices", inputs=[], outputs=[],
+                                    default_input=-1, default_output=-1)
+
+        elif cmd_type == "set_audio_device":
+            dev_type = cmd.get("type", "")
+            dev_id = cmd.get("device_id", -1)
+            logger.info("Set audio device: %s = %s", dev_type, dev_id)
+            # Will be wired to audio_input/audio_output when pipeline is active
+
+        elif cmd_type == "test_mic":
+            dev_id = cmd.get("device_id", None)
+            logger.info("Mic test requested on device %s", dev_id)
+            asyncio.ensure_future(_test_mic(emitter, dev_id))
+
+        elif cmd_type == "test_speaker":
+            dev_id = cmd.get("device_id", None)
+            logger.info("Speaker test requested on device %s", dev_id)
+            asyncio.ensure_future(_test_speaker(emitter, dev_id))
 
         elif cmd_type == "get_status":
             logger.info("Status request — re-emitting all component states")
@@ -128,6 +361,8 @@ async def main() -> None:
         pass
     finally:
         logger.info("Shutting down...")
+        if orch:
+            await orch.stop()
         await pm.shutdown()
         vram.shutdown()
         await emitter.stop()

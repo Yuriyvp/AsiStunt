@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -7,6 +7,7 @@ use tauri::{Emitter, Manager};
 
 struct SidecarState {
     stdin: Mutex<Option<std::process::ChildStdin>>,
+    child: Mutex<Option<Child>>,
 }
 
 #[tauri::command]
@@ -76,12 +77,17 @@ fn spawn_python_sidecar(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     eprintln!("[tauri] Sidecar PID: {}", child.id());
 
     let stdin = child.stdin.take().unwrap();
+
+    // Read stdout/stderr before moving child into state
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
     app.manage(SidecarState {
         stdin: Mutex::new(Some(stdin)),
+        child: Mutex::new(Some(child)),
     });
 
     // Read stdout → parse JSON → emit to webview
-    let stdout = child.stdout.take().unwrap();
     let handle = app.handle().clone();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -110,7 +116,6 @@ fn spawn_python_sidecar(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     });
 
     // Read stderr → forward to Tauri debug console
-    let stderr = child.stderr.take().unwrap();
     std::thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
@@ -212,6 +217,7 @@ pub fn run() {
                 // Still run UI — sidecar can be started later
                 app.manage(SidecarState {
                     stdin: Mutex::new(None),
+                    child: Mutex::new(None),
                 });
             }
 
@@ -228,6 +234,28 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![send_command])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Kill sidecar and its children on app exit
+                let state: tauri::State<SidecarState> = app.state();
+
+                // Close stdin first — signals Python to exit gracefully
+                if let Ok(mut stdin_lock) = state.stdin.lock() {
+                    stdin_lock.take();
+                }
+
+                // Kill the child process if it hasn't exited
+                if let Ok(mut child_lock) = state.child.lock() {
+                    if let Some(mut child) = child_lock.take() {
+                        eprintln!("[tauri] Killing sidecar PID {}", child.id());
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+
+                eprintln!("[tauri] Cleanup complete");
+            }
+        });
 }

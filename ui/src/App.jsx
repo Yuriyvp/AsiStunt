@@ -348,7 +348,6 @@ export default function App() {
     'state_change', 'filler_played',
     'request_start', 'first_token', 'complete',
     'synth_start', 'synth_end',
-    'process_state_change',
   ]);
 
   const [showWizard, setShowWizard] = useState(() => {
@@ -370,6 +369,21 @@ export default function App() {
   });
   const turnIdRef = useRef(0);
 
+  // Direct listener for component state changes — bypasses React batching
+  // Each signal is processed individually via functional updater
+  useEffect(() => {
+    const unlisten = listen('python_event', (event) => {
+      const data = event.payload;
+      if (data.event === 'signal' && data.type === 'process_state_change') {
+        const { component, state } = data;
+        if (component && state && component !== 'system') {
+          setComponentStates(prev => ({ ...prev, [component]: state }));
+        }
+      }
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
   // Request component status on mount (catches up after startup race)
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -388,26 +402,12 @@ export default function App() {
     if (signals.input_level) setEnergy(signals.input_level.level || 0);
     if (signals.mood_change) setMood(signals.mood_change.mood || 'neutral');
     if (signals.language_detected) setLanguage(signals.language_detected.language || null);
-    if (signals.process_state_change) {
-      const sig = signals.process_state_change;
-      if (sig.component && sig.state && sig.component !== 'system') {
-        setComponentStates(prev => ({ ...prev, [sig.component]: sig.state }));
-      }
-    }
   }, [signals]);
 
   // Track turns from events
   useEffect(() => {
     if (events.length === 0) return;
     const last = events[events.length - 1];
-
-    if (last.event === 'signal' && last.type === 'process_state_change') {
-      const comp = last.component;
-      const s = last.state;
-      if (comp && s && comp !== 'system') {
-        setComponentStates(prev => ({ ...prev, [comp]: s }));
-      }
-    }
 
     if (last.event === 'transcript') {
       if (last.role === 'user') {
