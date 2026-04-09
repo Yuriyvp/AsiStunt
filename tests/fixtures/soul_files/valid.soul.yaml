@@ -1,0 +1,41 @@
+name: "TestBot"
+version: 2
+
+voice:
+  method: "description"
+  description: "neutral test voice"
+  reference_audio: null
+  filler_style: "minimal"
+
+mood:
+  default: "calm"
+  range: [calm, warm]
+
+memory:
+  summary_style: "factual"
+  summary_budget_trigger: 0.7
+
+language:
+  available: [en]
+  default: en
+  detection_threshold: 0.5
+
+llm:
+  model: "models/test.gguf"
+  ctx_size: 4096
+  port: 9090
+  gpu_layers: 10
+  threads: 2
+  batch_size: 256
+  flash_attn: false
+  sampling:
+    temperature: 0.5
+    top_p: 0.8
+
+personality: |
+  You are a test bot.
+
+backstory: |
+  Created for testing.
+
+session_restore_hours: 2

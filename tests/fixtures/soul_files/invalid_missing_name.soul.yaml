@@ -1,0 +1,18 @@
+version: 2
+
+voice:
+  method: "description"
+  description: "test"
+
+mood:
+  default: "warm"
+  range: [warm]
+
+language:
+  available: [en]
+  default: en
+
+llm:
+  model: "models/test.gguf"
+
+personality: "test"

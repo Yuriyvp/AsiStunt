@@ -1,0 +1,133 @@
+:root {
+  /* Background */
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-surface: #1a1a25;
+
+  /* Text */
+  --text-primary: #e8e8f0;
+  --text-secondary: #8888a0;
+  --text-muted: #555570;
+
+  /* Orb colors */
+  --orb-idle: #4466cc;
+  --orb-listening: #44cc88;
+  --orb-processing: #aa66dd;
+  --orb-speaking: #66aaff;
+  --orb-interrupted: #ff4466;
+
+  /* Mood tints */
+  --mood-neutral: #4466cc;
+  --mood-warm: #cc8844;
+  --mood-playful: #cc6666;
+  --mood-calm: #8899aa;
+  --mood-concerned: #ccaa44;
+
+  /* Chat bubbles */
+  --bg-user-bubble: #1a2a3a;
+  --bg-ai-bubble: #1a1a2a;
+
+  /* Mic pill states */
+  --mic-listening: #44cc88;
+  --mic-muted: #cc4444;
+  --mic-ptt: #ccaa44;
+  --mic-text: #8888a0;
+
+  /* Spacing (rem-based for accessibility scaling) */
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+
+  /* Transitions */
+  --transition-mood: 1.5s ease-in-out;
+  --transition-state: 0.3s ease;
+
+  /* Border radius */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-pill: 999px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Animations */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-surface);
+  border-radius: 3px;
+}
+
+/* Inputs inherit dark theme */
+input, select, button {
+  font-family: inherit;
+}
+
+/* Focus ring — visible keyboard focus for all interactive elements */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="switch"]:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--orb-listening);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(68, 204, 136, 0.2);
+}
+
+/* Degraded mode banner — assertive for screen readers */
+[role="alert"] {
+  font-weight: 600;
+}
+
+/* Skip link (hidden until focused) */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 0;
+  z-index: 9999;
+  padding: 0.5rem 1rem;
+  background: var(--orb-listening);
+  color: var(--bg-primary);
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 0 0 var(--radius-sm) 0;
+}
+.skip-link:focus {
+  top: 0;
+}
+
+/* Window drag region — borderless window needs a drag handle */
+[data-tauri-drag-region] {
+  cursor: grab;
+}
+[data-tauri-drag-region]:active {
+  cursor: grabbing;
+}

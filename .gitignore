@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# Models (large binaries)
+models/*.gguf
+models/*.onnx
+models/sherpa-onnx-*/
+
+# Compiled binaries
+bin/llama-server
+
+# Voice data (user-generated)
+voice_db/profiles/*.voiceprofile
+voice_db/profiles/*.cachekey
+voice_db/fillers/*.wav
+voice_db/fillers/*.mp3
+
+# Session data
+data/sessions/
+data/summaries/
+
+# Node
+node_modules/
+ui/node_modules/
+
+# Vite
+ui/dist/
+
+# Tauri
+ui/src-tauri/target/
+ui/src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
