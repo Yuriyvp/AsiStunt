@@ -1,7 +1,7 @@
 """Sentence chunker — splits LLM text stream into TTS-ready chunks.
 
-First chunk: aggressive — 30+ chars, fires on clause boundary (, ; — :).
-Subsequent chunks: 60–150 chars, fires on sentence boundary (.!?…).
+First chunk: aggressive — 15+ chars, fires on clause boundary (, ; — :).
+Subsequent chunks: 50–150 chars, fires on sentence boundary (.!?…).
 Safety valve: force flush at 150 chars on nearest word boundary.
 
 Abbreviation handling: regex skip list (Mr., Dr., vs., etc.).
@@ -34,7 +34,7 @@ class SentenceChunker:
             tts_queue.put(final)
     """
 
-    def __init__(self, first_chunk_min: int = 30, normal_chunk_min: int = 60,
+    def __init__(self, first_chunk_min: int = 15, normal_chunk_min: int = 50,
                  max_chunk: int = 150):
         self._buffer = ""
         self._chunk_count = 0

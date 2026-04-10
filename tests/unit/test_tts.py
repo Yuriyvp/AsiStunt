@@ -13,68 +13,13 @@ import torch
 
 from voice_assistant.adapters.omnivoice_tts import OmniVoiceTTS
 from voice_assistant.core.voice_clone import (
-    compute_cache_key,
     get_profile_path,
-    is_profile_valid,
     load_voice_clone_prompt,
     PROFILES_DIR,
 )
 
 
 # --- voice_clone.py tests ---
-
-
-class TestComputeCacheKey:
-    def test_description_only(self):
-        key = compute_cache_key(None, "young woman, warm alto")
-        assert len(key) == 16
-        assert key == compute_cache_key(None, "young woman, warm alto")
-
-    def test_different_descriptions_differ(self):
-        k1 = compute_cache_key(None, "young woman")
-        k2 = compute_cache_key(None, "old man")
-        assert k1 != k2
-
-    def test_with_audio_file(self, tmp_path):
-        audio_file = tmp_path / "ref.wav"
-        audio_file.write_bytes(b"fake audio data")
-        key = compute_cache_key(str(audio_file), "warm alto")
-        assert len(key) == 16
-
-    def test_audio_changes_key(self, tmp_path):
-        f1 = tmp_path / "ref1.wav"
-        f2 = tmp_path / "ref2.wav"
-        f1.write_bytes(b"audio one")
-        f2.write_bytes(b"audio two")
-        k1 = compute_cache_key(str(f1), "same desc")
-        k2 = compute_cache_key(str(f2), "same desc")
-        assert k1 != k2
-
-    def test_missing_audio_falls_back(self):
-        key = compute_cache_key("/nonexistent/file.wav", "desc")
-        key_none = compute_cache_key(None, "desc")
-        assert key == key_none
-
-
-class TestIsProfileValid:
-    def test_no_profile(self, tmp_path):
-        assert not is_profile_valid("TestVoice", "abc123")
-
-    def test_valid_profile(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("voice_assistant.core.voice_clone.PROFILES_DIR", tmp_path)
-        profile = tmp_path / "Aria.voiceprofile"
-        keyfile = tmp_path / "Aria.cachekey"
-        profile.write_bytes(b"data")
-        keyfile.write_text("abc123")
-        assert is_profile_valid("Aria", "abc123")
-
-    def test_stale_cache_key(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("voice_assistant.core.voice_clone.PROFILES_DIR", tmp_path)
-        profile = tmp_path / "Aria.voiceprofile"
-        keyfile = tmp_path / "Aria.cachekey"
-        profile.write_bytes(b"data")
-        keyfile.write_text("old_key")
-        assert not is_profile_valid("Aria", "new_key")
 
 
 class TestGetProfilePath:

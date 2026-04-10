@@ -40,8 +40,12 @@ class LlamaCppLLM(LLMPort):
             self._session = aiohttp.ClientSession()
         return self._session
 
-    async def stream(self, messages: list[dict], sampling: dict | None = None) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict], sampling: dict | None = None,
+                     thinking: bool = False) -> AsyncIterator[str]:
         """Stream tokens from llama.cpp /v1/chat/completions.
+
+        Args:
+            thinking: Enable model reasoning (default off for speed).
 
         Yields individual token strings. Caller should concatenate.
         """
@@ -52,6 +56,7 @@ class LlamaCppLLM(LLMPort):
             "messages": messages,
             "stream": True,
             "max_tokens": 1024,
+            "chat_template_kwargs": {"enable_thinking": thinking},
             **params,
         }
 

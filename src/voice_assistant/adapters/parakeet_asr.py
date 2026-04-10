@@ -5,8 +5,8 @@ VAD-gated: only called when speech_end fires, receives the speech audio segment.
 RTF ~0.15–0.35 on Zen 3.
 
 Uses sherpa_onnx.OfflineRecognizer.from_transducer() factory method.
-Language detection via langdetect (Parakeet v3 supports 25 European languages
-but sherpa-onnx doesn't expose detected language via result.lang).
+Language detection via multi-strategy text analysis (Parakeet v3 transcribes
+25 European languages but the TDT transducer doesn't predict language tokens).
 """
 import asyncio
 import logging
@@ -14,6 +14,7 @@ import time
 
 import numpy as np
 
+from voice_assistant.core.language_detector import detect_language
 from voice_assistant.ports.asr import ASRPort
 
 logger = logging.getLogger(__name__)
@@ -73,30 +74,15 @@ class ParakeetASR(ASRPort):
 
         logger.info("ASR: '%s' (%.1fs audio, RTF=%.2f)", text[:80], duration, rtf)
 
-        language = self._detect_language(text)
+        language = detect_language(text, self._supported_languages)
 
         return {
             "text": text,
-            "language": language,
+            "language": language,  # None means "keep current language"
             "confidence": 0.9,  # sherpa-onnx doesn't expose per-utterance confidence
             "rtf": rtf,
             "duration_s": duration,
         }
-
-    def _detect_language(self, text: str) -> str:
-        """Detect language of transcribed text using langdetect."""
-        if not text or len(text.strip()) < 3:
-            return self._supported_languages[0]
-
-        try:
-            from langdetect import detect
-            detected = detect(text)
-            if detected in self._supported_languages:
-                return detected
-        except Exception:
-            logger.debug("Language detection failed, using default")
-
-        return self._supported_languages[0]
 
     async def shutdown(self) -> None:
         logger.info("Parakeet ASR shut down")

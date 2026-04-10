@@ -29,7 +29,7 @@ class PipelineMode(enum.Enum):
 VALID_TRANSITIONS = {
     PipelineState.IDLE: {PipelineState.LISTENING, PipelineState.PROCESSING},
     PipelineState.LISTENING: {PipelineState.PROCESSING, PipelineState.IDLE},
-    PipelineState.PROCESSING: {PipelineState.SPEAKING, PipelineState.IDLE, PipelineState.PROCESSING},
+    PipelineState.PROCESSING: {PipelineState.SPEAKING, PipelineState.IDLE, PipelineState.PROCESSING, PipelineState.INTERRUPTED},
     PipelineState.SPEAKING: {PipelineState.IDLE, PipelineState.INTERRUPTED},
     PipelineState.INTERRUPTED: {PipelineState.PROCESSING, PipelineState.IDLE, PipelineState.LISTENING},
 }

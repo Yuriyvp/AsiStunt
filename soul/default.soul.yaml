@@ -43,8 +43,8 @@ version: 2
 voice:
   languages:
   - id: hr
-    reference_audio: null
+    reference_audio: /home/winers/voice-assistant/ViceClone/HR v3.wav
   - id: en
-    reference_audio: null
+    reference_audio: /home/winers/voice-assistant/ViceClone/EN v3.wav
   - id: ru
-    reference_audio: null
+    reference_audio: /home/winers/voice-assistant/ViceClone/RU v3.wav

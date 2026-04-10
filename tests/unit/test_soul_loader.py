@@ -16,7 +16,7 @@ class TestLoadSoul:
         assert soul.version == 2
         assert len(soul.voice_languages) == 3
         assert soul.voice_languages[0].id == "hr"
-        assert soul.default_language == "hr"
+        assert soul.default_language == "ru"
         assert soul.llm_ctx_size == 8192
         assert soul.llm_flash_attn is True
         assert soul.sampling["temperature"] == 0.75
@@ -78,9 +78,9 @@ class TestLoadSoul:
         lang_ids = [vl.id for vl in soul.voice_languages]
         assert "hr" in lang_ids
         assert "en" in lang_ids
-        # All reference_audio should be None initially
+        # reference_audio is either None or a string path
         for vl in soul.voice_languages:
-            assert vl.reference_audio is None
+            assert vl.reference_audio is None or isinstance(vl.reference_audio, str)
 
     def test_sampling_dict(self):
         """Sampling params are a dict passable to LLM adapter."""

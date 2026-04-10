@@ -61,7 +61,7 @@ def _make_components(**overrides):
 
     llm = AsyncMock()
 
-    async def _stream(messages, sampling=None):
+    async def _stream(messages, sampling=None, **kwargs):
         for token in ["Hello", ", ", "how ", "are ", "you", "?"]:
             yield token
     llm.stream = _stream
@@ -153,8 +153,8 @@ class TestEndToEndVoiceLoop:
         components["tts"].synthesize.assert_called()
         # Playlist got chunks
         components["playlist"].append.assert_called()
-        # Playlist waited for playback
-        components["playlist"].wait_until_done.assert_awaited()
+        # Pipeline transitions to IDLE without waiting for playback
+        assert orch.state == PipelineState.IDLE
         # Filler turn recorded
         components["filler_cache"].record_turn.assert_called()
 
@@ -208,7 +208,7 @@ class TestEndToEndVoiceLoop:
         """Multiple text inputs build up dialogue history."""
         turn_count = 0
 
-        async def varied_stream(messages, sampling=None):
+        async def varied_stream(messages, sampling=None, **kwargs):
             nonlocal turn_count
             turn_count += 1
             for token in [f"Response {turn_count}", "."]:
@@ -232,7 +232,7 @@ class TestEndToEndVoiceLoop:
     @pytest.mark.asyncio
     async def test_mood_parsed_from_stream(self):
         """Mood signal tags in LLM output update the mood state."""
-        async def mood_stream(messages, sampling=None):
+        async def mood_stream(messages, sampling=None, **kwargs):
             yield "<mood_signal>user_tone=happy, intensity=0.9</mood_signal>"
             yield "\nThat's wonderful news!"
 
@@ -250,7 +250,7 @@ class TestEndToEndVoiceLoop:
     @pytest.mark.asyncio
     async def test_llm_error_returns_to_idle(self):
         """If LLM stream raises, orchestrator returns to IDLE gracefully."""
-        async def failing_stream(messages, sampling=None):
+        async def failing_stream(messages, sampling=None, **kwargs):
             yield "Start..."
             raise RuntimeError("LLM crashed")
 
@@ -283,7 +283,7 @@ class TestEndToEndVoiceLoop:
         components["tts"].synthesize = flaky_tts
 
         # Use a stream that produces enough text for multiple chunks
-        async def long_stream(messages, sampling=None):
+        async def long_stream(messages, sampling=None, **kwargs):
             for token in ["This is a longer response. ", "It has multiple sentences. ",
                           "The TTS should handle partial failures gracefully."]:
                 yield token
@@ -306,7 +306,7 @@ class TestStateTransitionSequence:
     @pytest.mark.asyncio
     async def test_idle_to_processing_to_idle(self):
         """Minimal path: IDLE -> PROCESSING -> IDLE (when no TTS chunks produced)."""
-        async def empty_stream(messages, sampling=None):
+        async def empty_stream(messages, sampling=None, **kwargs):
             return
             yield  # make it an async generator
 
@@ -329,7 +329,7 @@ class TestStateTransitionSequence:
         components = _make_components()
 
         # Ensure enough text for sentence chunker to fire
-        async def chunky_stream(messages, sampling=None):
+        async def chunky_stream(messages, sampling=None, **kwargs):
             yield "This is a complete sentence that should trigger chunking. "
             yield "And here is another one for good measure."
 

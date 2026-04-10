@@ -1,19 +1,11 @@
 import { useState, useCallback } from 'react';
 import Dashboard from '../pages/Dashboard';
-import VADPage from '../pages/VADPage';
-import LLMPage from '../pages/LLMPage';
-import TTSPage from '../pages/TTSPage';
 import AudioPipelinePage from '../pages/AudioPipelinePage';
-import SOULPage from '../pages/SOULPage';
 import EventLogPage from '../pages/EventLogPage';
 
 const TABS = [
   { key: 'dashboard', label: 'Dashboard' },
-  { key: 'vad', label: 'VAD' },
-  { key: 'llm', label: 'LLM' },
-  { key: 'tts', label: 'TTS' },
   { key: 'pipeline', label: 'Pipeline' },
-  { key: 'soul', label: 'SOUL' },
   { key: 'events', label: 'Events' },
 ];
 
@@ -23,15 +15,11 @@ export default function DebugWindow({ signals, events, state, sendCommand, onClo
   const renderPage = useCallback(() => {
     switch (activeTab) {
       case 'dashboard': return <Dashboard signals={signals} state={state} events={events} />;
-      case 'vad': return <VADPage signals={signals} />;
-      case 'llm': return <LLMPage signals={signals} events={events} sendCommand={sendCommand} />;
-      case 'tts': return <TTSPage signals={signals} events={events} />;
       case 'pipeline': return <AudioPipelinePage signals={signals} state={state} />;
-      case 'soul': return <SOULPage sendCommand={sendCommand} events={events} />;
       case 'events': return <EventLogPage events={events} />;
       default: return null;
     }
-  }, [activeTab, signals, events, state, sendCommand]);
+  }, [activeTab, signals, events, state]);
 
   return (
     <div style={{

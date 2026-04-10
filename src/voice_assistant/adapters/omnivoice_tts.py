@@ -82,6 +82,12 @@ class OmniVoiceTTS(TTSPort):
         """Set the active language for synthesis."""
         self._active_language = lang
 
+    def unload_language(self, lang: str) -> None:
+        """Remove a loaded voice profile for a language."""
+        if lang in self._voice_prompts:
+            del self._voice_prompts[lang]
+            logger.info("Unloaded voice profile for '%s'", lang)
+
     @property
     def available_languages(self) -> list[str]:
         """Languages that have loaded voice profiles."""

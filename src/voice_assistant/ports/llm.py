@@ -5,7 +5,8 @@ from collections.abc import AsyncIterator
 
 class LLMPort(ABC):
     @abstractmethod
-    async def stream(self, messages: list[dict], sampling: dict) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict], sampling: dict | None = None,
+                     thinking: bool = False) -> AsyncIterator[str]:
         """Stream tokens from the LLM. Yields token strings."""
         ...
 

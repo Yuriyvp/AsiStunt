@@ -43,7 +43,7 @@ def _make_components(**overrides):
 
     llm = AsyncMock()
 
-    async def _stream(messages, sampling=None):
+    async def _stream(messages, sampling=None, **kwargs):
         for token in ["Response", "."]:
             yield token
     llm.stream = _stream
@@ -51,6 +51,7 @@ def _make_components(**overrides):
 
     tts = AsyncMock()
     tts.synthesize = AsyncMock(return_value=_make_tts_audio())
+    tts.set_language = MagicMock()
 
     playlist = MagicMock()
     playlist.append = MagicMock()
@@ -170,17 +171,31 @@ class TestLanguageSwitching:
         assert orch._current_language == "hr"
 
     @pytest.mark.asyncio
-    async def test_language_preserved_on_text_input(self):
-        """Text input should not change the detected language."""
+    async def test_language_detected_on_text_input(self):
+        """Text input detects language and updates current language."""
         components = _make_components()
-        orch = Orchestrator(**components)
+        orch = Orchestrator(**components, supported_languages=["hr", "en", "ru"])
         orch._current_language = "hr"
 
-        await orch.handle_text_input("test in english")
+        await orch.handle_text_input("test in english is short")
         if orch._processing_task:
             await asyncio.wait_for(orch._processing_task, timeout=5.0)
 
-        # Text input doesn't go through ASR, so language stays as was
+        # Text input now detects language — long enough English text switches to "en"
+        assert orch._current_language == "en"
+
+    @pytest.mark.asyncio
+    async def test_language_preserved_on_short_text_input(self):
+        """Short text input should not change the detected language."""
+        components = _make_components()
+        orch = Orchestrator(**components, supported_languages=["hr", "en", "ru"])
+        orch._current_language = "hr"
+
+        await orch.handle_text_input("ok")
+        if orch._processing_task:
+            await asyncio.wait_for(orch._processing_task, timeout=5.0)
+
+        # Text too short for detection — language preserved
         assert orch._current_language == "hr"
 
     @pytest.mark.asyncio
@@ -250,7 +265,7 @@ class TestLanguageInDialogue:
 
         turn_idx = 0
 
-        async def lang_aware_stream(messages, sampling=None):
+        async def lang_aware_stream(messages, sampling=None, **kwargs):
             nonlocal turn_idx
             responses = [
                 ["I'm ", "fine ", "thanks!"],

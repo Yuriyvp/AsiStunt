@@ -127,7 +127,7 @@ class Playlist:
         thread, and asyncio.Event is not thread-safe.
         """
         while not self._done_flag.is_set():
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.02)
 
     @property
     def is_empty(self) -> bool:

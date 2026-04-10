@@ -39,7 +39,7 @@ def _make_components(**overrides):
 
     llm = AsyncMock()
 
-    async def _stream(messages, sampling=None):
+    async def _stream(messages, sampling=None, **kwargs):
         for token in ["OK", "."]:
             yield token
     llm.stream = _stream
@@ -98,7 +98,7 @@ class TestBargeInExecution:
 
         await orch._execute_barge_in()
 
-        components["playback"].fade_out.assert_called_once_with(30)
+        components["playback"].fade_out.assert_called_once_with(15)
 
     @pytest.mark.asyncio
     async def test_barge_in_drops_future_chunks(self):
@@ -126,6 +126,7 @@ class TestBargeInExecution:
         ))
 
         await orch._execute_barge_in()
+        await asyncio.sleep(0)  # let fire-and-forget LLM cancel complete
 
         components["llm"].cancel.assert_awaited_once()
 
@@ -174,9 +175,10 @@ class TestTextInputBargeIn:
         ))
 
         await orch.handle_text_input("actually, never mind")
+        await asyncio.sleep(0)  # let fire-and-forget LLM cancel complete
 
         # Barge-in should have been triggered
-        components["playback"].fade_out.assert_called_with(30)
+        components["playback"].fade_out.assert_called_with(15)
         components["llm"].cancel.assert_awaited()
 
     @pytest.mark.asyncio
@@ -205,7 +207,7 @@ class TestBargeInProcessingCancel:
     async def test_text_during_processing_cancels_current(self):
         """Text input while processing should cancel current LLM work."""
         # Create a slow LLM stream
-        async def slow_stream(messages, sampling=None):
+        async def slow_stream(messages, sampling=None, **kwargs):
             for token in ["Slow", " response"]:
                 await asyncio.sleep(0.1)
                 yield token

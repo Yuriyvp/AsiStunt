@@ -46,7 +46,7 @@ def mock_components():
 
     llm = AsyncMock()
 
-    async def mock_stream(messages, sampling=None):
+    async def mock_stream(messages, sampling=None, **kwargs):
         for token in ["Hi", " there", "!"]:
             yield token
     llm.stream = mock_stream
@@ -129,7 +129,7 @@ class TestOrchestratorTextInput:
         ))
 
         await orch.handle_text_input("interrupt!")
-        mock_components["playback"].fade_out.assert_called_with(30)
+        mock_components["playback"].fade_out.assert_called_with(15)
         mock_components["llm"].cancel.assert_called()
 
     @pytest.mark.asyncio
@@ -169,7 +169,7 @@ class TestOrchestratorTurn:
     @pytest.mark.asyncio
     async def test_mood_updated_from_stream(self, mock_components):
         """LLM stream with mood tag should update mood state."""
-        async def stream_with_mood(messages, sampling=None):
+        async def stream_with_mood(messages, sampling=None, **kwargs):
             yield "<mood_signal>user_tone=happy, intensity=0.8</mood_signal>"
             yield "\nGreat to hear!"
         mock_components["llm"].stream = stream_with_mood

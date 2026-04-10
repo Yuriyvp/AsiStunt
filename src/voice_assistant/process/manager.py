@@ -231,7 +231,7 @@ class ProcessManager:
             self._set_component_state("tts", "starting")
             try:
                 from voice_assistant.adapters.omnivoice_tts import OmniVoiceTTS
-                from voice_assistant.core.voice_clone import is_profile_valid, get_profile_path, compute_cache_key
+                from voice_assistant.core.voice_clone import get_profile_path
                 self._tts = OmniVoiceTTS()
                 await self._tts.load()
 
@@ -268,7 +268,8 @@ class ProcessManager:
             self._set_component_state("asr", "starting")
             try:
                 from voice_assistant.adapters.parakeet_asr import ParakeetASR
-                self._asr = ParakeetASR()
+                supported = [vl.id for vl in self._soul.voice_languages] or ["en"]
+                self._asr = ParakeetASR(supported_languages=supported)
                 self._set_component_state("asr", "ready")
             except Exception as e:
                 logger.error("ASR startup failed: %s", e)
@@ -430,7 +431,8 @@ class ProcessManager:
                     self._set_component_state("asr", "ready")
                     return "ready"
                 from voice_assistant.adapters.parakeet_asr import ParakeetASR
-                self._asr = ParakeetASR()
+                supported = [vl.id for vl in self._soul.voice_languages] or ["en"]
+                self._asr = ParakeetASR(supported_languages=supported)
 
             elif component == "vad":
                 if self._vad is not None:

@@ -42,7 +42,7 @@ def _mock_llm(stream_tokens=None, token_count=50):
     """Create a mock LLM that streams tokens and counts."""
     llm = AsyncMock()
 
-    async def mock_stream(messages, sampling=None):
+    async def mock_stream(messages, sampling=None, **kwargs):
         for t in (stream_tokens or ["Summary ", "of ", "conversation."]):
             yield t
     llm.stream = mock_stream
@@ -84,7 +84,7 @@ class TestRollingSummary:
         """When token count > 600, compression pass should run."""
         call_count = 0
 
-        async def counting_stream(messages, sampling=None):
+        async def counting_stream(messages, sampling=None, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -115,7 +115,7 @@ class TestRollingSummary:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_false(self):
-        async def slow_stream(messages, sampling=None):
+        async def slow_stream(messages, sampling=None, **kwargs):
             await asyncio.sleep(10)
             yield "too late"
         llm = AsyncMock()

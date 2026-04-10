@@ -44,8 +44,8 @@ class SileroVAD:
         self,
         model_path: str = "models/silero_vad.onnx",
         threshold: float = 0.5,
-        min_silence_duration_ms: int = 300,
-        min_speech_duration_ms: int = 250,
+        min_silence_duration_ms: int = 500,
+        min_speech_duration_ms: int = 100,
         sample_rate: int = 16000,
     ):
         self._sample_rate = sample_rate

@@ -304,6 +304,7 @@ async def main() -> None:
                 "Keep responses concise and natural for spoken conversation."
             )
 
+            supported = [vl.id for vl in soul.voice_languages] or ["en"]
             orch = Orchestrator(
                 audio_input=audio_input,
                 vad=pm._vad,
@@ -314,6 +315,8 @@ async def main() -> None:
                 playback=playback,
                 filler_cache=filler_cache,
                 system_prompt=system_prompt,
+                default_language=soul.default_language,
+                supported_languages=supported,
             )
 
             # Wire orchestrator state changes to IPC
@@ -323,13 +326,16 @@ async def main() -> None:
 
             # Wire chunk-by-chunk transcript to IPC (spoken text appears progressively)
             def on_chunk_synthesized(text):
-                emitter.emit({"event": "chunk_spoken", "text": text})
+                if not orch._generation_cancelled:
+                    emitter.emit({"event": "chunk_spoken", "text": text})
             orch._on_chunk_synthesized = on_chunk_synthesized
 
             # Wire LLM token streaming to IPC
             original_llm_stream = llm.stream
-            async def stream_with_ipc(messages, sampling=None):
-                async for token in original_llm_stream(messages, sampling):
+            async def stream_with_ipc(messages, sampling=None, thinking=False):
+                async for token in original_llm_stream(messages, sampling, thinking=thinking):
+                    if orch._generation_cancelled:
+                        break  # stop emitting tokens after barge-in
                     emitter.emit_token(token)
                     yield token
             llm.stream = stream_with_ipc
@@ -363,6 +369,11 @@ async def main() -> None:
     # Command handler
     loop = asyncio.get_event_loop()
 
+    def _log_task_exception(task: asyncio.Task) -> None:
+        """Log exceptions from fire-and-forget tasks."""
+        if not task.cancelled() and task.exception():
+            logger.exception("Unhandled error in async task", exc_info=task.exception())
+
     def handle_command(cmd: dict) -> None:
         cmd_type = cmd.get("cmd")
         logger.info("IPC command: %s", cmd_type)
@@ -371,7 +382,8 @@ async def main() -> None:
             text = cmd.get("text") or cmd.get("content", "")
             if text and orch:
                 logger.info("Text input: %s", text[:80])
-                asyncio.ensure_future(orch.handle_text_input(text))
+                task = asyncio.ensure_future(orch.handle_text_input(text))
+                task.add_done_callback(_log_task_exception)
             elif text:
                 logger.warning("Text input but orchestrator not running")
 
@@ -469,31 +481,69 @@ async def main() -> None:
             lang_ids = cmd.get("languages", [])[:3]  # max 3
             logger.info("Update TTS languages: %s", lang_ids)
             from voice_assistant.core.soul_loader import VoiceLanguageConfig
+            from voice_assistant.core.voice_clone import get_profile_path
             # Preserve existing reference_audio for languages that stay
             existing = {vl.id: vl.reference_audio for vl in soul.voice_languages}
+            old_ids = set(existing.keys())
+            new_ids = set(lang_ids)
+
             soul.voice_languages = [
                 VoiceLanguageConfig(id=lid, reference_audio=existing.get(lid))
                 for lid in lang_ids
             ]
+
+            # Sync TTS voice_prompts: unload removed, load new if cached
+            if pm._tts:
+                for removed in old_ids - new_ids:
+                    pm._tts.unload_language(removed)
+                for added in new_ids - old_ids:
+                    profile = get_profile_path(f"{soul.name}_{added}")
+                    if profile.exists():
+                        try:
+                            pm._tts.load_voice_profile_sync(added, str(profile))
+                        except Exception as e:
+                            logger.warning("Failed to load profile for '%s': %s", added, e)
+
+            # Ensure default language is still valid
+            if soul.default_language not in new_ids and lang_ids:
+                soul.default_language = lang_ids[0]
+                if pm._tts:
+                    pm._tts.set_language(soul.default_language)
+
             asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
             # Re-emit settings
             handle_command({"cmd": "get_tts_settings"})
 
         elif cmd_type == "set_default_language":
             lang = cmd.get("lang", "en")
+            configured = {vl.id for vl in soul.voice_languages}
+            if lang not in configured:
+                logger.warning("Cannot set default to '%s' — not in configured languages %s", lang, configured)
+                return
             logger.info("Set default language: %s", lang)
             soul.default_language = lang
             if pm._tts:
                 pm._tts.set_language(lang)
+            if orch:
+                orch._current_language = lang
             asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
 
         elif cmd_type == "clone_voice_for_lang":
             lang = cmd.get("lang", "")
             ref_audio = cmd.get("reference_audio", "")
             if lang and ref_audio:
+                import os
+                if not os.path.isfile(ref_audio):
+                    emitter.emit_signal("voice_clone_progress", lang=lang, status="error",
+                                        message=f"File not found: {ref_audio}")
+                    return
                 logger.info("Clone voice for '%s': %s", lang, ref_audio)
-                asyncio.ensure_future(_clone_voice_for_lang(pm, soul, emitter, lang, ref_audio))
-                asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
+
+                async def _clone_then_save():
+                    await _clone_voice_for_lang(pm, soul, emitter, lang, ref_audio)
+                    await _save_soul_yaml(soul, soul_path)
+
+                asyncio.ensure_future(_clone_then_save())
 
         elif cmd_type == "shutdown":
             logger.info("Shutdown requested via IPC")

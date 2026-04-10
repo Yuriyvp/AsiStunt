@@ -448,6 +448,17 @@ export default function App() {
         }
       }
 
+      // Barge-in: clear streaming turn so old tokens don't keep appending
+      if (data.event === 'state_change' && data.state === 'INTERRUPTED') {
+        if (streamingTurnId.current) {
+          const sid = streamingTurnId.current;
+          streamingTurnId.current = null;
+          setTurns(prev => prev.map(t =>
+            t.id === sid ? { ...t, streaming: false, interrupted: true } : t
+          ));
+        }
+      }
+
       // Chunk-by-chunk assistant speech — build response progressively
       if (data.event === 'chunk_spoken') {
         const chunkText = data.text || '';
