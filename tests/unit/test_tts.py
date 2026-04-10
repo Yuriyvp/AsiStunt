@@ -106,7 +106,7 @@ class MockOmniVoice:
     def eval(self):
         return self
 
-    def generate(self, text, speed=1.0, voice_clone_prompt=None, instruct=None):
+    def generate(self, text, speed=1.0, voice_clone_prompt=None, instruct=None, language=None):
         n_samples = int(len(text) * 0.06 * 24000)
         return [torch.randn(1, max(n_samples, 100))]
 
@@ -126,47 +126,50 @@ class TestOmniVoiceTTS:
             await tts.synthesize("hello")
 
     @pytest.mark.asyncio
-    async def test_load_description_mode(self, tts):
+    async def test_load_model(self, tts):
         with patch("omnivoice.OmniVoice") as MockClass:
             MockClass.from_pretrained.return_value = MockOmniVoice()
-            tts._load_sync("description", "warm female voice", None)
+            tts._load_sync()
         assert tts._model is not None
-        assert tts._voice_description == "warm female voice"
-        assert tts._voice_clone_prompt is None
-
-    @pytest.mark.asyncio
-    async def test_synthesize_returns_f32_array(self, tts):
-        tts._model = MockOmniVoice()
-        tts._voice_description = "warm voice"
-        result = await tts.synthesize("Hello, world!")
-        assert isinstance(result, np.ndarray)
-        assert result.dtype == np.float32
-        assert len(result) > 0
-
-    @pytest.mark.asyncio
-    async def test_synthesize_with_voice_params(self, tts):
-        tts._model = MockOmniVoice()
-        tts._voice_description = "warm voice"
-        result = await tts.synthesize("test", {"speed": 1.1, "tags": ["[laughter]"]})
-        assert isinstance(result, np.ndarray)
 
     @pytest.mark.asyncio
     async def test_synthesize_with_clone_prompt(self, tts):
         tts._model = MockOmniVoice()
         from omnivoice.models.omnivoice import VoiceClonePrompt
-        tts._voice_clone_prompt = VoiceClonePrompt(
+        prompt = VoiceClonePrompt(
             ref_audio_tokens=torch.randn(1, 50), ref_text="ref", ref_rms=0.05
         )
+        tts._voice_prompts["en"] = prompt
+        tts._active_language = "en"
         result = await tts.synthesize("cloned speech test")
         assert isinstance(result, np.ndarray)
         assert result.dtype == np.float32
+        assert len(result) > 0
+
+    @pytest.mark.asyncio
+    async def test_synthesize_no_profile_raises(self, tts):
+        tts._model = MockOmniVoice()
+        with pytest.raises(RuntimeError, match="No voice profile"):
+            await tts.synthesize("hello")
+
+    @pytest.mark.asyncio
+    async def test_per_language_profiles(self, tts):
+        tts._model = MockOmniVoice()
+        from omnivoice.models.omnivoice import VoiceClonePrompt
+        prompt_en = VoiceClonePrompt(ref_audio_tokens=torch.randn(1, 50), ref_text="en", ref_rms=0.05)
+        prompt_hr = VoiceClonePrompt(ref_audio_tokens=torch.randn(1, 50), ref_text="hr", ref_rms=0.05)
+        tts._voice_prompts["en"] = prompt_en
+        tts._voice_prompts["hr"] = prompt_hr
+        assert tts.available_languages == ["en", "hr"]
+        tts.set_language("hr")
+        assert tts._active_language == "hr"
 
     @pytest.mark.asyncio
     async def test_shutdown(self, tts):
         tts._model = MockOmniVoice()
         await tts.shutdown()
         assert tts._model is None
-        assert tts._voice_clone_prompt is None
+        assert tts._voice_prompts == {}
 
 
 def _mock_import(name, *args, **kwargs):

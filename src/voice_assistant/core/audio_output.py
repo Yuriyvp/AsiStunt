@@ -40,23 +40,28 @@ class Playlist:
 
     Operations: append, insert_at, drop_future, fade_out, clear.
     Tracking: text_played(), text_remaining(), wait_until_done().
+
+    Thread safety: read_samples() is called from a sounddevice callback thread,
+    while append/clear/wait_until_done are called from the asyncio thread.
+    We use threading.Event (not asyncio.Event) for cross-thread signaling.
     """
 
     def __init__(self):
         self._chunks: list[AudioChunk] = []
         self._current_index: int = 0
         self._lock = threading.Lock()
-        self._done_event = asyncio.Event()
+        self._done_flag = threading.Event()
+        self._done_flag.set()  # empty playlist starts as "done"
 
     def append(self, chunk: AudioChunk) -> None:
         with self._lock:
             self._chunks.append(chunk)
-            self._done_event.clear()
+            self._done_flag.clear()
 
     def insert_at(self, index: int, chunk: AudioChunk) -> None:
         with self._lock:
             self._chunks.insert(index, chunk)
-            self._done_event.clear()
+            self._done_flag.clear()
 
     def drop_future(self) -> list[AudioChunk]:
         """Drop all chunks after the currently playing one. Returns dropped chunks."""
@@ -69,7 +74,7 @@ class Playlist:
         with self._lock:
             self._chunks.clear()
             self._current_index = 0
-            self._done_event.set()
+            self._done_flag.set()
 
     def text_played(self) -> str:
         """Return concatenated text of all fully played chunks."""
@@ -89,7 +94,7 @@ class Playlist:
         """
         with self._lock:
             if self._current_index >= len(self._chunks):
-                self._done_event.set()
+                self._done_flag.set()
                 return None
 
             result = np.zeros(n, dtype=np.float32)
@@ -109,15 +114,20 @@ class Playlist:
                     self._current_index += 1
 
             if filled == 0:
-                self._done_event.set()
+                self._done_flag.set()
                 return None
             if filled < n:
                 result = result[:filled]
             return result
 
     async def wait_until_done(self) -> None:
-        """Wait until all chunks have been played."""
-        await self._done_event.wait()
+        """Wait until all chunks have been played.
+
+        Uses polling because the done flag is set from the sounddevice callback
+        thread, and asyncio.Event is not thread-safe.
+        """
+        while not self._done_flag.is_set():
+            await asyncio.sleep(0.05)
 
     @property
     def is_empty(self) -> bool:

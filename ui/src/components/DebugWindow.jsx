@@ -25,7 +25,7 @@ export default function DebugWindow({ signals, events, state, sendCommand, onClo
       case 'dashboard': return <Dashboard signals={signals} state={state} events={events} />;
       case 'vad': return <VADPage signals={signals} />;
       case 'llm': return <LLMPage signals={signals} events={events} sendCommand={sendCommand} />;
-      case 'tts': return <TTSPage signals={signals} events={events} sendCommand={sendCommand} />;
+      case 'tts': return <TTSPage signals={signals} events={events} />;
       case 'pipeline': return <AudioPipelinePage signals={signals} state={state} />;
       case 'soul': return <SOULPage sendCommand={sendCommand} events={events} />;
       case 'events': return <EventLogPage events={events} />;

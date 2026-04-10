@@ -205,29 +205,7 @@ class ProcessManager:
         tts_ok = False
 
         try:
-            # Step 1: Voice clone check
-            if self._soul.voice_method == "clone" and self._soul.voice_reference_audio:
-                from voice_assistant.core.voice_clone import (
-                    compute_cache_key, is_profile_valid, run_voice_cloning,
-                )
-                cache_key = compute_cache_key(
-                    self._soul.voice_reference_audio, self._soul.voice_description,
-                )
-                if not is_profile_valid(self._soul.name, cache_key):
-                    logger.info("Voice profile not found — running cloning pipeline")
-                    self._ipc.emit_signal("voice_clone_progress", status="starting")
-                    await run_voice_cloning(
-                        self._soul.name,
-                        self._soul.voice_reference_audio,
-                        self._soul.voice_description,
-                        cache_key,
-                        on_progress=lambda msg: self._ipc.emit_signal(
-                            "voice_clone_progress", status=msg,
-                        ),
-                    )
-                    self._ipc.emit_signal("voice_clone_progress", status="complete")
-
-            # Step 2: llama.cpp server
+            # Step 1: llama.cpp server
             self._set_component_state("llm", "starting")
             self._llm_process = LlamaCppProcess(
                 server_binary=str(Path(self._soul.llm_model).parent.parent / "bin" / "llama-server"),
@@ -249,16 +227,25 @@ class ProcessManager:
                 self._set_component_state("llm", "error")
                 self._llm_process = None
 
-            # Step 3: TTS load (OmniVoice)
+            # Step 3: TTS load (OmniVoice) + per-language voice profiles
             self._set_component_state("tts", "starting")
             try:
                 from voice_assistant.adapters.omnivoice_tts import OmniVoiceTTS
+                from voice_assistant.core.voice_clone import is_profile_valid, get_profile_path, compute_cache_key
                 self._tts = OmniVoiceTTS()
-                await self._tts.load(
-                    self._soul.voice_method,
-                    self._soul.voice_description,
-                    None,  # profile_path — set later if clone
-                )
+                await self._tts.load()
+
+                # Load cached voice profiles for each configured language
+                for vl in self._soul.voice_languages:
+                    profile_path = get_profile_path(f"{self._soul.name}_{vl.id}")
+                    if profile_path.exists():
+                        try:
+                            self._tts.load_voice_profile_sync(vl.id, str(profile_path))
+                            logger.info("Loaded cached voice profile for '%s'", vl.id)
+                        except Exception as e:
+                            logger.warning("Failed to load profile for '%s': %s", vl.id, e)
+
+                self._tts.set_language(self._soul.default_language)
                 tts_ok = True
                 self._set_component_state("tts", "ready")
             except Exception as e:
@@ -425,12 +412,18 @@ class ProcessManager:
                     self._set_component_state("tts", "ready")
                     return "ready"
                 from voice_assistant.adapters.omnivoice_tts import OmniVoiceTTS
+                from voice_assistant.core.voice_clone import get_profile_path
                 self._tts = OmniVoiceTTS()
-                await self._tts.load(
-                    self._soul.voice_method,
-                    self._soul.voice_description,
-                    None,
-                )
+                await self._tts.load()
+                # Load any cached voice profiles
+                for vl in self._soul.voice_languages:
+                    profile_path = get_profile_path(f"{self._soul.name}_{vl.id}")
+                    if profile_path.exists():
+                        try:
+                            self._tts.load_voice_profile_sync(vl.id, str(profile_path))
+                        except Exception:
+                            pass
+                self._tts.set_language(self._soul.default_language)
 
             elif component == "asr":
                 if self._asr is not None:

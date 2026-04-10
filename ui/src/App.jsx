@@ -405,33 +405,73 @@ export default function App() {
   }, [signals]);
 
   // Track turns from events
-  useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
+  const streamingTurnId = useRef(null);
 
-    if (last.event === 'transcript') {
-      if (last.role === 'user') {
-        setLastUser(last.text || '');
-        setTurns(prev => [...prev, {
-          id: ++turnIdRef.current,
-          role: 'user',
-          text: last.text || '',
-          source: last.source || 'voice',
-        }]);
+  // Direct listener for chunk_spoken and transcript — bypasses React batching
+  useEffect(() => {
+    const unlisten = listen('python_event', (event) => {
+      const data = event.payload;
+
+      if (data.event === 'transcript') {
+        if (data.role === 'user') {
+          setLastUser(data.text || '');
+          setTurns(prev => [...prev, {
+            id: ++turnIdRef.current,
+            role: 'user',
+            text: data.text || '',
+            source: data.source || 'voice',
+          }]);
+        }
+        if (data.role === 'assistant') {
+          setLastAssistant(data.text || '');
+          const sid = streamingTurnId.current;
+          if (sid) {
+            // Finalize the streaming turn with complete text
+            setTurns(prev => prev.map(t =>
+              t.id === sid
+                ? { ...t, text: data.text || '', streaming: false,
+                    interrupted: data.interrupted || false,
+                    spokenText: data.spoken_text || null }
+                : t
+            ));
+            streamingTurnId.current = null;
+          } else {
+            setTurns(prev => [...prev, {
+              id: ++turnIdRef.current,
+              role: 'assistant',
+              text: data.text || '',
+              source: 'voice',
+              interrupted: data.interrupted || false,
+              spokenText: data.spoken_text || null,
+            }]);
+          }
+        }
       }
-      if (last.role === 'assistant') {
-        setLastAssistant(last.text || '');
-        setTurns(prev => [...prev, {
-          id: ++turnIdRef.current,
-          role: 'assistant',
-          text: last.text || '',
-          source: 'voice',
-          interrupted: last.interrupted || false,
-          spokenText: last.spoken_text || null,
-        }]);
+
+      // Chunk-by-chunk assistant speech — build response progressively
+      if (data.event === 'chunk_spoken') {
+        const chunkText = data.text || '';
+        if (!streamingTurnId.current) {
+          const newId = ++turnIdRef.current;
+          streamingTurnId.current = newId;
+          setTurns(prev => [...prev, {
+            id: newId,
+            role: 'assistant',
+            text: chunkText,
+            source: 'voice',
+            streaming: true,
+          }]);
+        } else {
+          const sid = streamingTurnId.current;
+          setTurns(prev => prev.map(t =>
+            t.id === sid ? { ...t, text: t.text + ' ' + chunkText } : t
+          ));
+        }
+        setLastAssistant(chunkText);
       }
-    }
-  }, [events]);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
 
   // Window resize on mode toggle
   const toggleExpanded = useCallback(async () => {
@@ -743,6 +783,12 @@ export default function App() {
         <Settings
           onClose={() => setShowSettings(false)}
           sendCommand={sendCommand}
+          onNewConversation={() => {
+            sendCommand({ cmd: 'new_conversation' });
+            setLastUser('');
+            setLastAssistant('');
+            setTurns([]);
+          }}
         />
       )}
 

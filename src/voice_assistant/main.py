@@ -140,6 +140,94 @@ async def _test_speaker(emitter, device_id=None):
         emitter.emit_signal("speaker_test", status="error", message=str(e))
 
 
+async def _tts_test(emitter, tts, text, lang=None):
+    """Synthesize text directly via TTS and play through speakers (no LLM)."""
+    import time as _time
+    try:
+        voice_params = {"language": lang} if lang else {}
+        emitter.emit_signal("synth_start", text=text, lang=lang)
+        start = _time.monotonic()
+        audio = await tts.synthesize(text, voice_params)
+        elapsed_ms = int((_time.monotonic() - start) * 1000)
+        duration_s = len(audio) / 24000
+        rtf = (elapsed_ms / 1000) / duration_s if duration_s > 0 else 0
+
+        # Play directly via sounddevice
+        import sounddevice as sd
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: sd.play(audio, samplerate=24000, blocking=True)
+        )
+        emitter.emit_signal("synth_end", text=text, lang=lang, rtf=round(rtf, 3),
+                            duration_ms=elapsed_ms)
+    except Exception as e:
+        logger.error("TTS test failed: %s", e)
+        emitter.emit_signal("synth_end", text=text, lang=lang, rtf=0, duration_ms=0,
+                            error=str(e))
+
+
+async def _save_soul_yaml(soul, path):
+    """Save voice language config back to the SOUL yaml file."""
+    try:
+        import yaml
+        from pathlib import Path
+        p = Path(path)
+        if p.exists():
+            data = yaml.safe_load(p.read_text())
+        else:
+            data = {}
+        if "voice" not in data:
+            data["voice"] = {}
+        data["voice"]["languages"] = [
+            {"id": vl.id, "reference_audio": vl.reference_audio}
+            for vl in soul.voice_languages
+        ]
+        data["language"] = {"default": soul.default_language}
+        p.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+        logger.info("SOUL config saved to %s", path)
+    except Exception as e:
+        logger.error("Failed to save SOUL config: %s", e)
+
+
+async def _clone_voice_for_lang(pm, soul, emitter, lang, reference_audio):
+    """Clone voice for a single language using the already-loaded TTS model."""
+    try:
+        from voice_assistant.core.voice_clone import get_profile_path
+        import torch
+
+        if not pm._tts or pm._tts._model is None:
+            raise RuntimeError("TTS model not loaded")
+
+        emitter.emit_signal("voice_clone_progress", lang=lang, status="Cloning...")
+
+        # Clone using the loaded model (no need to unload/reload)
+        prompt = await pm._tts.clone_voice(lang, reference_audio)
+
+        # Save profile to disk
+        profile_path = get_profile_path(f"{soul.name}_{lang}")
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "ref_audio_tokens": prompt.ref_audio_tokens,
+                "ref_text": prompt.ref_text,
+                "ref_rms": prompt.ref_rms,
+            },
+            profile_path,
+        )
+
+        # Update soul config
+        for vl in soul.voice_languages:
+            if vl.id == lang:
+                vl.reference_audio = reference_audio
+                break
+
+        emitter.emit_signal("voice_clone_progress", lang=lang, status="complete")
+        logger.info("Voice cloned for '%s', saved to %s", lang, profile_path)
+    except Exception as e:
+        logger.error("Voice cloning failed for '%s': %s", lang, e)
+        emitter.emit_signal("voice_clone_progress", lang=lang, status="error",
+                            message=str(e))
+
+
 async def main() -> None:
     # Logging to stderr — stdout is IPC only
     logging.basicConfig(
@@ -206,6 +294,16 @@ async def main() -> None:
             filler_cache = FillerCache()
             llm = LlamaCppLLM(f"http://127.0.0.1:{pm._llm_process.port}")
 
+            # Build system prompt from SOUL personality
+            persona = soul.persona_card()
+            system_prompt = (
+                f"{persona}\n\n"
+                "You are a voice assistant. Your responses will be spoken aloud via text-to-speech. "
+                "Always respond in plain conversational text. Never use markdown, asterisks, "
+                "bullet points, numbered lists, headers, or any formatting symbols. "
+                "Keep responses concise and natural for spoken conversation."
+            )
+
             orch = Orchestrator(
                 audio_input=audio_input,
                 vad=pm._vad,
@@ -215,12 +313,18 @@ async def main() -> None:
                 playlist=playlist,
                 playback=playback,
                 filler_cache=filler_cache,
+                system_prompt=system_prompt,
             )
 
             # Wire orchestrator state changes to IPC
             def on_state_change(old_state, new_state):
                 emitter.emit_state_change(new_state.value)
             orch._state._on_change = on_state_change
+
+            # Wire chunk-by-chunk transcript to IPC (spoken text appears progressively)
+            def on_chunk_synthesized(text):
+                emitter.emit({"event": "chunk_spoken", "text": text})
+            orch._on_chunk_synthesized = on_chunk_synthesized
 
             # Wire LLM token streaming to IPC
             original_llm_stream = llm.stream
@@ -230,31 +334,23 @@ async def main() -> None:
                     yield token
             llm.stream = stream_with_ipc
 
-            # Wire transcript events — patch _process_voice_turn and handle_text_input
-            original_handle_text = orch.handle_text_input
-            async def handle_text_with_ipc(text):
-                emitter.emit({"event": "transcript", "role": "user", "text": text, "source": "text"})
-                await original_handle_text(text)
+            # Wire transcript events — patch _process_turn (called by both text and voice paths)
+            # Text input: frontend already shows user turn locally, so only emit for voice
+            # Assistant transcript: always emit after turn completes
+            original_process_turn = orch._process_turn
+            async def process_turn_with_ipc(user_text, source="text"):
+                # For voice input, emit user transcript (text input is shown locally by frontend)
+                if source == "voice":
+                    emitter.emit({"event": "transcript", "role": "user",
+                                  "text": user_text, "source": source})
+                await original_process_turn(user_text, source)
+                # Emit assistant transcript after turn completes (LLM + TTS + playback done)
                 if orch._dialogue and orch._dialogue[-1].role == "assistant":
                     t = orch._dialogue[-1]
                     emitter.emit({"event": "transcript", "role": "assistant",
                                   "text": t.content, "source": t.source,
                                   "interrupted": t.interrupted, "spoken_text": t.partial})
-            orch.handle_text_input = handle_text_with_ipc
-
-            original_voice_turn = orch._process_voice_turn
-            async def voice_turn_with_ipc(audio):
-                await original_voice_turn(audio)
-                # Emit both user transcript and assistant response
-                for t in orch._dialogue[-2:]:
-                    if t.role == "user":
-                        emitter.emit({"event": "transcript", "role": "user",
-                                      "text": t.content, "source": t.source})
-                    elif t.role == "assistant":
-                        emitter.emit({"event": "transcript", "role": "assistant",
-                                      "text": t.content, "source": t.source,
-                                      "interrupted": t.interrupted, "spoken_text": t.partial})
-            orch._process_voice_turn = voice_turn_with_ipc
+            orch._process_turn = process_turn_with_ipc
 
             await orch.start()
             logger.info("Orchestrator started — full pipeline active")
@@ -340,6 +436,64 @@ async def main() -> None:
             component = cmd.get("component", "")
             logger.info("Stop component: %s", component)
             asyncio.ensure_future(pm.stop_component(component))
+
+        elif cmd_type == "tts_test":
+            text = cmd.get("text", "")
+            lang = cmd.get("lang")
+            if text and pm._tts:
+                logger.info("TTS test [%s]: %s", lang, text[:80])
+                asyncio.ensure_future(_tts_test(emitter, pm._tts, text, lang))
+            elif not pm._tts:
+                emitter.emit_signal("synth_start", text=text, lang=lang)
+                emitter.emit_signal("synth_end", text=text, lang=lang, rtf=0,
+                                    duration_ms=0, error="TTS not loaded")
+
+        elif cmd_type == "get_tts_settings":
+            logger.info("TTS settings requested")
+            langs = []
+            for vl in soul.voice_languages:
+                from voice_assistant.core.voice_clone import get_profile_path
+                profile = get_profile_path(f"{soul.name}_{vl.id}")
+                langs.append({
+                    "id": vl.id,
+                    "reference_audio": vl.reference_audio,
+                    "has_profile": profile.exists(),
+                })
+            loaded = pm._tts.available_languages if pm._tts else []
+            emitter.emit_signal("tts_settings",
+                                languages=langs,
+                                loaded_languages=loaded,
+                                default_language=soul.default_language)
+
+        elif cmd_type == "update_tts_languages":
+            lang_ids = cmd.get("languages", [])[:3]  # max 3
+            logger.info("Update TTS languages: %s", lang_ids)
+            from voice_assistant.core.soul_loader import VoiceLanguageConfig
+            # Preserve existing reference_audio for languages that stay
+            existing = {vl.id: vl.reference_audio for vl in soul.voice_languages}
+            soul.voice_languages = [
+                VoiceLanguageConfig(id=lid, reference_audio=existing.get(lid))
+                for lid in lang_ids
+            ]
+            asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
+            # Re-emit settings
+            handle_command({"cmd": "get_tts_settings"})
+
+        elif cmd_type == "set_default_language":
+            lang = cmd.get("lang", "en")
+            logger.info("Set default language: %s", lang)
+            soul.default_language = lang
+            if pm._tts:
+                pm._tts.set_language(lang)
+            asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
+
+        elif cmd_type == "clone_voice_for_lang":
+            lang = cmd.get("lang", "")
+            ref_audio = cmd.get("reference_audio", "")
+            if lang and ref_audio:
+                logger.info("Clone voice for '%s': %s", lang, ref_audio)
+                asyncio.ensure_future(_clone_voice_for_lang(pm, soul, emitter, lang, ref_audio))
+                asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
 
         elif cmd_type == "shutdown":
             logger.info("Shutdown requested via IPC")

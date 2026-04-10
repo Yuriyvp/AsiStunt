@@ -7,12 +7,21 @@
     "version": {"type": "integer", "minimum": 2},
     "voice": {
       "type": "object",
-      "required": ["method", "description"],
+      "required": ["languages"],
       "properties": {
-        "method": {"enum": ["description", "clone"]},
-        "description": {"type": "string"},
-        "reference_audio": {"type": ["string", "null"]},
-        "filler_style": {"enum": ["soft", "expressive", "minimal"]}
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": {"type": "string"},
+              "reference_audio": {"type": ["string", "null"]}
+            }
+          },
+          "minItems": 1,
+          "maxItems": 3
+        }
       }
     },
     "mood": {
@@ -32,11 +41,9 @@
     },
     "language": {
       "type": "object",
-      "required": ["available", "default"],
+      "required": ["default"],
       "properties": {
-        "available": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-        "default": {"type": "string"},
-        "detection_threshold": {"type": "number", "minimum": 0, "maximum": 1}
+        "default": {"type": "string"}
       }
     },
     "llm": {

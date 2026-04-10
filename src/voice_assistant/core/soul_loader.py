@@ -16,21 +16,23 @@ SCHEMA_PATH = Path(__file__).resolve().parents[3] / "soul" / "schema.json"
 
 
 @dataclass
+class VoiceLanguageConfig:
+    """Voice config for a single language."""
+    id: str
+    reference_audio: str | None = None
+
+
+@dataclass
 class SoulConfig:
     """Parsed and validated SOUL configuration."""
     name: str
     version: int
-    voice_method: str
-    voice_description: str
-    voice_reference_audio: str | None
-    filler_style: str
+    voice_languages: list[VoiceLanguageConfig]
     mood_default: str
     mood_range: list[str]
     summary_style: str
     summary_trigger: float
-    languages: list[str]
     default_language: str
-    detection_threshold: float
     llm_model: str
     llm_ctx_size: int
     llm_port: int
@@ -84,20 +86,29 @@ def load_soul(path: str | Path) -> SoulConfig:
     llm = raw.get("llm", {})
     sampling = llm.get("sampling", {})
 
+    # Parse per-language voice configs
+    voice_langs_raw = voice.get("languages", [])
+    voice_languages = []
+    for vl in voice_langs_raw:
+        if isinstance(vl, dict):
+            voice_languages.append(VoiceLanguageConfig(
+                id=vl.get("id", "en"),
+                reference_audio=vl.get("reference_audio"),
+            ))
+        elif isinstance(vl, str):
+            voice_languages.append(VoiceLanguageConfig(id=vl))
+    if not voice_languages:
+        voice_languages = [VoiceLanguageConfig(id="en")]
+
     return SoulConfig(
         name=raw["name"],
         version=raw.get("version", 2),
-        voice_method=voice.get("method", "description"),
-        voice_description=voice.get("description", ""),
-        voice_reference_audio=voice.get("reference_audio"),
-        filler_style=voice.get("filler_style", "soft"),
+        voice_languages=voice_languages,
         mood_default=mood.get("default", "warm"),
         mood_range=mood.get("range", ["calm", "warm", "playful", "concerned"]),
         summary_style=memory.get("summary_style", "emotional"),
         summary_trigger=memory.get("summary_budget_trigger", 0.8),
-        languages=language.get("available", ["en"]),
         default_language=language.get("default", "en"),
-        detection_threshold=language.get("detection_threshold", 0.6),
         llm_model=llm.get("model", ""),
         llm_ctx_size=llm.get("ctx_size", 8192),
         llm_port=llm.get("port", 8080),

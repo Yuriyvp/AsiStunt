@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import TTSSettings from './TTSSettings';
 
 function SettingRow({ label, children, column }) {
   return (
@@ -133,15 +134,13 @@ function LevelBar({ level }) {
   );
 }
 
-export default function Settings({ onClose, sendCommand, currentSettings = {} }) {
+export default function Settings({ onClose, sendCommand, onNewConversation, currentSettings = {} }) {
   const panelRef = useRef(null);
   const closeRef = useRef(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(currentSettings.alwaysOnTop ?? true);
   const [debugMode, setDebugMode] = useState(currentSettings.debugMode ?? false);
-  const [lockLanguage, setLockLanguage] = useState(currentSettings.lockLanguage ?? false);
   const [voiceInputMode, setVoiceInputMode] = useState(currentSettings.voiceInputMode ?? 'continuous');
   const [responseMode, setResponseMode] = useState(currentSettings.responseMode ?? 'voice');
-  const [language, setLanguage] = useState(currentSettings.language ?? 'hr');
   const [showConfirmClear, setShowConfirmClear] = useState(false);
   const [audioDevices, setAudioDevices] = useState({ inputs: [], outputs: [] });
   const [defaultInput, setDefaultInput] = useState(-1);
@@ -152,6 +151,7 @@ export default function Settings({ onClose, sendCommand, currentSettings = {} })
   const [micLevel, setMicLevel] = useState(0);
   const [micLevels, setMicLevels] = useState([]);
   const [speakerTestState, setSpeakerTestState] = useState('idle'); // idle | playing | done | error
+  const [showTTSSettings, setShowTTSSettings] = useState(false);
 
   // Listen for audio device list + test results from Python
   useEffect(() => {
@@ -198,28 +198,24 @@ export default function Settings({ onClose, sendCommand, currentSettings = {} })
           setTimeout(() => setSpeakerTestState('idle'), 3000);
         }
       }
+
     });
     sendCommand?.({ cmd: 'list_audio_devices' });
     return () => { unlisten.then(fn => fn()); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNewConversation = useCallback(() => {
-    sendCommand?.({ cmd: 'new_conversation' });
-  }, [sendCommand]);
+    onNewConversation?.();
+  }, [onNewConversation]);
 
   const handleClearHistory = useCallback(() => {
     if (!showConfirmClear) {
       setShowConfirmClear(true);
       return;
     }
-    sendCommand?.({ cmd: 'new_conversation' });
+    onNewConversation?.();
     setShowConfirmClear(false);
-  }, [showConfirmClear, sendCommand]);
-
-  const handleLanguageChange = useCallback((lang) => {
-    setLanguage(lang);
-    sendCommand?.({ cmd: 'set_language', language: lang });
-  }, [sendCommand]);
+  }, [showConfirmClear, onNewConversation]);
 
   const handleMicChange = useCallback((deviceId) => {
     const id = parseInt(deviceId, 10);
@@ -339,23 +335,7 @@ export default function Settings({ onClose, sendCommand, currentSettings = {} })
         scrollbarWidth: 'thin',
         scrollbarColor: 'var(--bg-surface) transparent',
       }}>
-        <SectionLabel first>Language</SectionLabel>
-        <SettingRow label="Language">
-          <Select
-            value={language}
-            onChange={handleLanguageChange}
-            options={[
-              { value: 'hr', label: 'Croatian' },
-              { value: 'en', label: 'English' },
-              { value: 'de', label: 'German' },
-            ]}
-          />
-        </SettingRow>
-        <SettingRow label="Lock language">
-          <Toggle value={lockLanguage} onChange={setLockLanguage} label="Lock language detection" />
-        </SettingRow>
-
-        <SectionLabel>Audio Devices</SectionLabel>
+        <SectionLabel first>Audio Devices</SectionLabel>
         <SettingRow label="Microphone" column>
           <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
             <Select
@@ -497,6 +477,30 @@ export default function Settings({ onClose, sendCommand, currentSettings = {} })
           <Toggle value={debugMode} onChange={setDebugMode} label="Debug mode" />
         </SettingRow>
 
+        <SectionLabel>Voice & Language</SectionLabel>
+        <div style={{ paddingTop: '0.35rem' }}>
+          <button
+            onClick={() => setShowTTSSettings(true)}
+            style={{
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--text-muted)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.5rem',
+              color: 'var(--text-primary)',
+              fontSize: '0.8rem',
+              cursor: 'pointer',
+              width: '100%',
+              transition: 'background 0.2s',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <span>TTS Settings</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{'\u203A'}</span>
+          </button>
+        </div>
+
         <SectionLabel>Conversation</SectionLabel>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', paddingTop: '0.5rem' }}>
           <button
@@ -532,6 +536,13 @@ export default function Settings({ onClose, sendCommand, currentSettings = {} })
           </button>
         </div>
       </div>
+
+      {showTTSSettings && (
+        <TTSSettings
+          sendCommand={sendCommand}
+          onBack={() => setShowTTSSettings(false)}
+        />
+      )}
     </div>
   );
 }

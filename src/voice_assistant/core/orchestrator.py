@@ -60,6 +60,7 @@ class Orchestrator:
         playlist: Playlist,
         playback: PlaybackManager,
         filler_cache: FillerCache,
+        system_prompt: str = "",
     ):
         self._audio = audio_input
         self._vad = vad
@@ -70,10 +71,15 @@ class Orchestrator:
         self._playback = playback
         self._fillers = filler_cache
 
+        self._system_prompt = system_prompt or "You are a helpful voice assistant. Respond in plain conversational text. Never use markdown, bullet points, numbered lists, headers, or any formatting symbols."
+
         self._state = StateMachine(on_change=self._on_state_change)
         self._mood = MoodState()
         self._dialogue: list[Turn] = []
         self._current_language: str = "en"
+
+        # Callback for chunk-level events (wired to IPC in main.py)
+        self._on_chunk_synthesized: callable | None = None
 
         # Task handles for cancellation
         self._vad_task: asyncio.Task | None = None
@@ -267,9 +273,8 @@ class Orchestrator:
                 self._playlist.append(filler)
 
             # Build messages for LLM
-            # Simplified — ContextBuilder (Stage 11) will replace this
             messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "system", "content": self._system_prompt},
             ]
             for turn in self._dialogue[-10:]:  # last 10 turns
                 messages.append({"role": turn.role, "content": turn.content})
@@ -328,5 +333,7 @@ class Orchestrator:
         try:
             audio = await self._tts.synthesize(text, voice_params)
             self._playlist.append(AudioChunk(audio=audio, text=text, source="tts"))
+            if self._on_chunk_synthesized:
+                self._on_chunk_synthesized(text)
         except Exception:
             logger.exception("TTS synthesis failed for: %s", text[:40])

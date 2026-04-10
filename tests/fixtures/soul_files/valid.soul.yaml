@@ -2,10 +2,9 @@ name: "TestBot"
 version: 2
 
 voice:
-  method: "description"
-  description: "neutral test voice"
-  reference_audio: null
-  filler_style: "minimal"
+  languages:
+    - id: en
+      reference_audio: null
 
 mood:
   default: "calm"
@@ -16,9 +15,7 @@ memory:
   summary_budget_trigger: 0.7
 
 language:
-  available: [en]
   default: en
-  detection_threshold: 0.5
 
 llm:
   model: "models/test.gguf"
