@@ -1,50 +1,27 @@
-"""SOUL.yaml loader — single source of truth for persona configuration.
+"""SOUL.yaml loader — personality configuration only.
 
-Parses, validates against schema, and distributes config to each module.
+Infrastructure settings (LLM, TTS, voice, memory) live in config/settings.yaml
+and are loaded by settings_loader.py. This file only handles personality:
+name, personality, backstory, mood.
 """
-import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-import jsonschema
 
 logger = logging.getLogger(__name__)
-
-SCHEMA_PATH = Path(__file__).resolve().parents[3] / "soul" / "schema.json"
-
-
-@dataclass
-class VoiceLanguageConfig:
-    """Voice config for a single language."""
-    id: str
-    reference_audio: str | None = None
 
 
 @dataclass
 class SoulConfig:
-    """Parsed and validated SOUL configuration."""
+    """Personality configuration — sent to LLM as system prompt context."""
     name: str
-    version: int
-    voice_languages: list[VoiceLanguageConfig]
-    mood_default: str
-    mood_range: list[str]
-    summary_style: str
-    summary_trigger: float
-    default_language: str
-    llm_model: str
-    llm_ctx_size: int
-    llm_port: int
-    llm_gpu_layers: int
-    llm_threads: int
-    llm_batch_size: int
-    llm_flash_attn: bool
-    sampling: dict
-    personality: str
-    backstory: str
-    session_restore_hours: float
-    raw: dict  # original parsed YAML
+    personality: str = ""
+    backstory: str = ""
+    mood_default: str = "warm"
+    mood_range: list[str] = field(default_factory=lambda: ["calm", "warm", "playful", "concerned"])
+    raw: dict = field(default_factory=dict)
 
     def persona_card(self) -> str:
         """Generate the persona card for the system prompt."""
@@ -56,8 +33,12 @@ class SoulConfig:
         return "\n\n".join(parts)
 
 
+# Keep VoiceLanguageConfig importable from here for backwards compat
+from voice_assistant.core.settings_loader import VoiceLanguageConfig  # noqa: E402, F401
+
+
 def load_soul(path: str | Path) -> SoulConfig:
-    """Load and validate a SOUL.yaml file."""
+    """Load and validate a SOUL.yaml personality file."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"SOUL file not found: {path}")
@@ -68,57 +49,16 @@ def load_soul(path: str | Path) -> SoulConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"SOUL file must be a YAML mapping, got {type(raw).__name__}")
 
-    # Validate against schema
-    if SCHEMA_PATH.exists():
-        with open(SCHEMA_PATH, "r") as f:
-            schema = json.load(f)
-        try:
-            jsonschema.validate(raw, schema)
-        except jsonschema.ValidationError as e:
-            raise ValueError(f"SOUL.yaml validation failed: {e.message}") from e
-    else:
-        logger.warning("Schema file not found at %s, skipping validation", SCHEMA_PATH)
+    if "name" not in raw:
+        raise ValueError("SOUL file missing required field: name")
 
-    voice = raw.get("voice", {})
     mood = raw.get("mood", {})
-    memory = raw.get("memory", {})
-    language = raw.get("language", {})
-    llm = raw.get("llm", {})
-    sampling = llm.get("sampling", {})
-
-    # Parse per-language voice configs
-    voice_langs_raw = voice.get("languages", [])
-    voice_languages = []
-    for vl in voice_langs_raw:
-        if isinstance(vl, dict):
-            voice_languages.append(VoiceLanguageConfig(
-                id=vl.get("id", "en"),
-                reference_audio=vl.get("reference_audio"),
-            ))
-        elif isinstance(vl, str):
-            voice_languages.append(VoiceLanguageConfig(id=vl))
-    if not voice_languages:
-        voice_languages = [VoiceLanguageConfig(id="en")]
 
     return SoulConfig(
         name=raw["name"],
-        version=raw.get("version", 2),
-        voice_languages=voice_languages,
-        mood_default=mood.get("default", "warm"),
-        mood_range=mood.get("range", ["calm", "warm", "playful", "concerned"]),
-        summary_style=memory.get("summary_style", "emotional"),
-        summary_trigger=memory.get("summary_budget_trigger", 0.8),
-        default_language=language.get("default", "en"),
-        llm_model=llm.get("model", ""),
-        llm_ctx_size=llm.get("ctx_size", 8192),
-        llm_port=llm.get("port", 8080),
-        llm_gpu_layers=llm.get("gpu_layers", 999),
-        llm_threads=llm.get("threads", 4),
-        llm_batch_size=llm.get("batch_size", 512),
-        llm_flash_attn=llm.get("flash_attn", True),
-        sampling=sampling,
         personality=raw.get("personality", ""),
         backstory=raw.get("backstory", ""),
-        session_restore_hours=raw.get("session_restore_hours", 4),
+        mood_default=mood.get("default", "warm"),
+        mood_range=mood.get("range", ["calm", "warm", "playful", "concerned"]),
         raw=raw,
     )

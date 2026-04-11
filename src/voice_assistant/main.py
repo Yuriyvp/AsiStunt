@@ -165,12 +165,12 @@ async def _tts_test(emitter, tts, text, lang=None):
                             error=str(e))
 
 
-async def _save_soul_yaml(soul, path):
-    """Save voice language config back to the SOUL yaml file."""
+async def _save_settings_yaml(settings):
+    """Save voice/language config back to settings.yaml."""
     try:
         import yaml
         from pathlib import Path
-        p = Path(path)
+        p = Path(settings.path)
         if p.exists():
             data = yaml.safe_load(p.read_text())
         else:
@@ -179,13 +179,13 @@ async def _save_soul_yaml(soul, path):
             data["voice"] = {}
         data["voice"]["languages"] = [
             {"id": vl.id, "reference_audio": vl.reference_audio}
-            for vl in soul.voice_languages
+            for vl in settings.voice_languages
         ]
-        data["language"] = {"default": soul.default_language}
+        data["language"] = {"default": settings.default_language}
         p.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True))
-        logger.info("SOUL config saved to %s", path)
+        logger.info("Settings saved to %s", p)
     except Exception as e:
-        logger.error("Failed to save SOUL config: %s", e)
+        logger.error("Failed to save settings: %s", e)
 
 
 async def _clone_voice_for_lang(pm, soul, emitter, lang, reference_audio):
@@ -203,7 +203,7 @@ async def _clone_voice_for_lang(pm, soul, emitter, lang, reference_audio):
         prompt = await pm._tts.clone_voice(lang, reference_audio)
 
         # Save profile to disk
-        profile_path = get_profile_path(f"{soul.name}_{lang}")
+        profile_path = get_profile_path(f"voice_{lang}")
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
@@ -215,7 +215,7 @@ async def _clone_voice_for_lang(pm, soul, emitter, lang, reference_audio):
         )
 
         # Update soul config
-        for vl in soul.voice_languages:
+        for vl in settings.voice_languages:
             if vl.id == lang:
                 vl.reference_audio = reference_audio
                 break
@@ -238,7 +238,7 @@ async def main() -> None:
 
     logger.info("voice-assistant v0.1.0 starting...")
 
-    # Load SOUL config
+    # Load SOUL personality (name, personality, backstory, mood)
     from voice_assistant.core.soul_loader import load_soul
 
     soul_path = sys.argv[1] if len(sys.argv) > 1 else "soul/default.soul.yaml"
@@ -247,8 +247,16 @@ async def main() -> None:
     except (FileNotFoundError, ValueError) as e:
         logger.error("Failed to load SOUL config: %s", e)
         sys.exit(1)
-    logger.info("Loaded SOUL: %s (lang=%s, model=%s)",
-                soul.name, soul.default_language, soul.llm_model)
+    logger.info("Loaded SOUL: %s", soul.name)
+
+    # Load infrastructure settings (LLM, voice, language, memory)
+    from voice_assistant.core.settings_loader import load_settings
+
+    settings_path = sys.argv[2] if len(sys.argv) > 2 else "config/settings.yaml"
+    settings = load_settings(settings_path)
+    logger.info("Loaded settings: model=%s, lang=%s, voices=%s",
+                settings.llm_model, settings.default_language,
+                [vl.id for vl in settings.voice_languages])
 
     # Initialize IPC
     from voice_assistant.core.ipc import StdinReader, StdoutEmitter
@@ -275,7 +283,7 @@ async def main() -> None:
     # Process manager handles startup sequencing
     from voice_assistant.process.manager import ProcessManager
 
-    pm = ProcessManager(soul, vram, emitter)
+    pm = ProcessManager(soul, vram, emitter, settings=settings)
     mode = await pm.startup()
     logger.info("Pipeline mode: %s", mode.value)
 
@@ -304,7 +312,7 @@ async def main() -> None:
                 "Keep responses concise and natural for spoken conversation."
             )
 
-            supported = [vl.id for vl in soul.voice_languages] or ["en"]
+            supported = [vl.id for vl in settings.voice_languages] or ["en"]
             orch = Orchestrator(
                 audio_input=audio_input,
                 vad=pm._vad,
@@ -315,7 +323,7 @@ async def main() -> None:
                 playback=playback,
                 filler_cache=filler_cache,
                 system_prompt=system_prompt,
-                default_language=soul.default_language,
+                default_language=settings.default_language,
                 supported_languages=supported,
             )
 
@@ -393,7 +401,30 @@ async def main() -> None:
 
         elif cmd_type == "reload_soul":
             path = cmd.get("path", soul_path)
+            content = cmd.get("content")
             logger.info("SOUL reload request: %s", path)
+            try:
+                from pathlib import Path as _Path
+                # If UI sent edited content, save it to disk first
+                if content:
+                    _Path(path).write_text(content, encoding="utf-8")
+                    logger.info("SOUL YAML saved to %s (%d chars)", path, len(content))
+
+                from voice_assistant.core.soul_loader import load_soul as _reload_soul
+                new_soul = _reload_soul(path)
+                soul.name = new_soul.name
+                soul.personality = new_soul.personality
+                soul.backstory = new_soul.backstory
+                soul.mood_default = new_soul.mood_default
+                soul.mood_range = new_soul.mood_range
+                logger.info("SOUL reloaded: %s", soul.name)
+                emitter.emit_signal("soul_reloaded", name=soul.name)
+                # Re-emit YAML content so UI updates
+                saved = _Path(path).read_text(encoding="utf-8")
+                emitter.emit({"event": "soul_yaml", "content": saved})
+            except Exception as e:
+                logger.error("Failed to reload SOUL: %s", e)
+                emitter.emit_signal("soul_reload_error", message=str(e))
 
         elif cmd_type == "mute_toggle":
             logger.info("Mute toggle")
@@ -463,9 +494,9 @@ async def main() -> None:
         elif cmd_type == "get_tts_settings":
             logger.info("TTS settings requested")
             langs = []
-            for vl in soul.voice_languages:
+            for vl in settings.voice_languages:
                 from voice_assistant.core.voice_clone import get_profile_path
-                profile = get_profile_path(f"{soul.name}_{vl.id}")
+                profile = get_profile_path(f"voice_{vl.id}")
                 langs.append({
                     "id": vl.id,
                     "reference_audio": vl.reference_audio,
@@ -475,19 +506,19 @@ async def main() -> None:
             emitter.emit_signal("tts_settings",
                                 languages=langs,
                                 loaded_languages=loaded,
-                                default_language=soul.default_language)
+                                default_language=settings.default_language)
 
         elif cmd_type == "update_tts_languages":
             lang_ids = cmd.get("languages", [])[:3]  # max 3
             logger.info("Update TTS languages: %s", lang_ids)
-            from voice_assistant.core.soul_loader import VoiceLanguageConfig
+            from voice_assistant.core.settings_loader import VoiceLanguageConfig
             from voice_assistant.core.voice_clone import get_profile_path
             # Preserve existing reference_audio for languages that stay
-            existing = {vl.id: vl.reference_audio for vl in soul.voice_languages}
+            existing = {vl.id: vl.reference_audio for vl in settings.voice_languages}
             old_ids = set(existing.keys())
             new_ids = set(lang_ids)
 
-            soul.voice_languages = [
+            settings.voice_languages = [
                 VoiceLanguageConfig(id=lid, reference_audio=existing.get(lid))
                 for lid in lang_ids
             ]
@@ -497,7 +528,7 @@ async def main() -> None:
                 for removed in old_ids - new_ids:
                     pm._tts.unload_language(removed)
                 for added in new_ids - old_ids:
-                    profile = get_profile_path(f"{soul.name}_{added}")
+                    profile = get_profile_path(f"voice_{added}")
                     if profile.exists():
                         try:
                             pm._tts.load_voice_profile_sync(added, str(profile))
@@ -505,28 +536,28 @@ async def main() -> None:
                             logger.warning("Failed to load profile for '%s': %s", added, e)
 
             # Ensure default language is still valid
-            if soul.default_language not in new_ids and lang_ids:
-                soul.default_language = lang_ids[0]
+            if settings.default_language not in new_ids and lang_ids:
+                settings.default_language = lang_ids[0]
                 if pm._tts:
-                    pm._tts.set_language(soul.default_language)
+                    pm._tts.set_language(settings.default_language)
 
-            asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
+            asyncio.ensure_future(_save_settings_yaml(settings))
             # Re-emit settings
             handle_command({"cmd": "get_tts_settings"})
 
         elif cmd_type == "set_default_language":
             lang = cmd.get("lang", "en")
-            configured = {vl.id for vl in soul.voice_languages}
+            configured = {vl.id for vl in settings.voice_languages}
             if lang not in configured:
                 logger.warning("Cannot set default to '%s' — not in configured languages %s", lang, configured)
                 return
             logger.info("Set default language: %s", lang)
-            soul.default_language = lang
+            settings.default_language = lang
             if pm._tts:
                 pm._tts.set_language(lang)
             if orch:
                 orch._current_language = lang
-            asyncio.ensure_future(_save_soul_yaml(soul, soul_path))
+            asyncio.ensure_future(_save_settings_yaml(settings))
 
         elif cmd_type == "clone_voice_for_lang":
             lang = cmd.get("lang", "")
@@ -541,9 +572,44 @@ async def main() -> None:
 
                 async def _clone_then_save():
                     await _clone_voice_for_lang(pm, soul, emitter, lang, ref_audio)
-                    await _save_soul_yaml(soul, soul_path)
+                    await _save_settings_yaml(settings)
 
                 asyncio.ensure_future(_clone_then_save())
+
+        elif cmd_type == "get_soul_yaml":
+            logger.info("SOUL YAML requested")
+            try:
+                from pathlib import Path
+                content = Path(soul_path).read_text(encoding="utf-8")
+                emitter.emit({"event": "soul_yaml", "content": content})
+            except Exception as e:
+                logger.error("Failed to read SOUL YAML: %s", e)
+                emitter.emit({"event": "soul_yaml", "content": "", "error": str(e)})
+
+        elif cmd_type == "validate_soul":
+            yaml_content = cmd.get("content", "")
+            logger.info("SOUL validation requested (%d chars)", len(yaml_content))
+            try:
+                import yaml
+                data = yaml.safe_load(yaml_content)
+                errors = []
+                if not isinstance(data, dict):
+                    errors.append("YAML must be a mapping")
+                else:
+                    if not data.get("name"):
+                        errors.append("Missing required field: name")
+                    if not data.get("personality"):
+                        errors.append("Missing required field: personality")
+                    if "llm" in data and not data["llm"].get("model"):
+                        errors.append("Missing llm.model")
+                emitter.emit({"event": "soul_validation",
+                              "valid": len(errors) == 0, "errors": errors})
+            except yaml.YAMLError as e:
+                emitter.emit({"event": "soul_validation",
+                              "valid": False, "errors": [f"YAML parse error: {e}"]})
+            except Exception as e:
+                emitter.emit({"event": "soul_validation",
+                              "valid": False, "errors": [str(e)]})
 
         elif cmd_type == "shutdown":
             logger.info("Shutdown requested via IPC")

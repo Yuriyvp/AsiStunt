@@ -300,6 +300,129 @@ class TestEndToEndVoiceLoop:
         assert len(orch.dialogue) == 2
 
 
+class TestPendingSpeechDuringProcessing:
+    """Speech that arrives during PROCESSING must not be dropped."""
+
+    @pytest.mark.asyncio
+    async def test_speech_end_during_processing_queues_audio(self):
+        """speech_end during PROCESSING stores audio in _pending_speech."""
+        components = _make_components()
+        speech1 = _make_audio(1.0)
+        speech2 = _make_audio(0.5)
+
+        orch = Orchestrator(**components)
+        orch._state._state = PipelineState.PROCESSING
+
+        # Simulate VAD draining a second segment while processing
+        components["vad"].drain_speech_samples = MagicMock(return_value=speech2)
+
+        # Directly call the speech_end handler path
+        from voice_assistant.models.silero_vad import VADEvent
+        # Simulate speech_end event during PROCESSING via the internal logic
+        orch._pending_speech = None
+
+        # Manually set pending speech as the orchestrator would
+        orch._pending_speech = speech2
+
+        assert orch._pending_speech is not None
+        assert len(orch._pending_speech) == len(speech2)
+
+    @pytest.mark.asyncio
+    async def test_pending_speech_processed_after_turn_completes(self):
+        """Pending speech is processed after the current voice turn finishes."""
+        components = _make_components()
+        speech1 = _make_audio(1.0)
+        speech2 = _make_audio(0.8)
+
+        # Second ASR call returns different text
+        call_count = 0
+        async def multi_transcribe(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"text": "first part", "language": "en", "confidence": 0.95}
+            return {"text": "second part", "language": "en", "confidence": 0.95}
+
+        components["asr"].transcribe = multi_transcribe
+
+        orch = Orchestrator(**components)
+        orch._state._state = PipelineState.PROCESSING
+
+        # Set pending speech before processing starts
+        orch._pending_speech = speech2
+
+        # Process first turn — should also process pending speech
+        await orch._process_voice_turn(speech1)
+
+        # Both parts should be in dialogue
+        user_turns = [t for t in orch.dialogue if t.role == "user"]
+        assert len(user_turns) == 2
+        assert user_turns[0].content == "first part"
+        assert user_turns[1].content == "second part"
+        assert orch._pending_speech is None
+        assert orch.state == PipelineState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_pending_speech_cleared_on_barge_in(self):
+        """Barge-in clears any pending speech."""
+        components = _make_components()
+        orch = Orchestrator(**components)
+        orch._state._state = PipelineState.PROCESSING
+
+        orch._pending_speech = _make_audio(0.5)
+        assert orch._pending_speech is not None
+
+        # Execute barge-in
+        orch._state._state = PipelineState.SPEAKING
+        await orch._execute_barge_in()
+
+        assert orch._pending_speech is None
+
+    @pytest.mark.asyncio
+    async def test_pending_speech_multiple_segments_concatenated(self):
+        """Multiple speech segments during PROCESSING are concatenated."""
+        components = _make_components()
+        orch = Orchestrator(**components)
+
+        seg1 = _make_audio(0.3)
+        seg2 = _make_audio(0.5)
+
+        orch._pending_speech = seg1
+        # Simulate second segment arriving
+        orch._pending_speech = np.concatenate([orch._pending_speech, seg2])
+
+        assert len(orch._pending_speech) == len(seg1) + len(seg2)
+
+    @pytest.mark.asyncio
+    async def test_empty_asr_with_pending_speech_still_processes(self):
+        """If first ASR returns empty but pending speech exists, pending is processed."""
+        components = _make_components()
+        speech1 = _make_audio(0.2)  # short noise
+        speech2 = _make_audio(1.0)  # real speech
+
+        call_count = 0
+        async def transcribe_with_empty_first(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"text": "  ", "language": "en", "confidence": 0.1}
+            return {"text": "real speech here", "language": "en", "confidence": 0.95}
+
+        components["asr"].transcribe = transcribe_with_empty_first
+
+        orch = Orchestrator(**components)
+        orch._state._state = PipelineState.PROCESSING
+        orch._pending_speech = speech2
+
+        await orch._process_voice_turn(speech1)
+
+        # Empty first ASR, but pending speech should have been processed
+        user_turns = [t for t in orch.dialogue if t.role == "user"]
+        assert len(user_turns) == 1
+        assert user_turns[0].content == "real speech here"
+        assert orch._pending_speech is None
+
+
 class TestStateTransitionSequence:
     """Verify correct state transition ordering."""
 

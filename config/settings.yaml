@@ -1,0 +1,29 @@
+language:
+  default: ru
+llm:
+  batch_size: 512
+  ctx_size: 8192
+  flash_attn: true
+  gpu_layers: 999
+  model: models/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf
+  port: 8080
+  sampling:
+    min_p: 0.05
+    repeat_last_n: 256
+    repeat_penalty: 1.1
+    temperature: 0.75
+    top_k: 40
+    top_p: 0.9
+  threads: 4
+memory:
+  summary_budget_trigger: 0.8
+  summary_style: emotional
+session_restore_hours: 4
+voice:
+  languages:
+  - id: hr
+    reference_audio: /home/winers/voice-assistant/ViceClone/HR v3.wav
+  - id: en
+    reference_audio: /home/winers/voice-assistant/ViceClone/EN v3.wav
+  - id: ru
+    reference_audio: /home/winers/voice-assistant/ViceClone/RU v3.wav

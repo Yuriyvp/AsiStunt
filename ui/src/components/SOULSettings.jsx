@@ -1,12 +1,28 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { SettingsPage, SectionLabel } from './SettingsUI';
+
+function extractName(yamlStr) {
+  const m = yamlStr.match(/^name:\s*(.+)$/m);
+  return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : '';
+}
 
 export default function SOULSettings({ sendCommand, onBack }) {
   const [yaml, setYaml] = useState('');
   const [validation, setValidation] = useState({ valid: true, errors: [] });
   const [lastReload, setLastReload] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  const name = useMemo(() => extractName(yaml), [yaml]);
+
+  const handleNameChange = useCallback((newName) => {
+    setYaml(prev => {
+      if (prev.match(/^name:\s*.+$/m)) {
+        return prev.replace(/^name:\s*.+$/m, `name: ${newName}`);
+      }
+      return `name: ${newName}\n${prev}`;
+    });
+  }, []);
 
   useEffect(() => {
     const unlisten = listen('python_event', (event) => {
@@ -38,6 +54,25 @@ export default function SOULSettings({ sendCommand, onBack }) {
   return (
     <SettingsPage title="SOUL" onBack={onBack}>
       <SectionLabel first>Persona Configuration</SectionLabel>
+
+      {/* Name field */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', minWidth: 40 }}>Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => handleNameChange(e.target.value)}
+          placeholder="Assistant name"
+          style={{
+            flex: 1, background: 'var(--bg-surface)',
+            border: '1px solid var(--text-muted)', borderRadius: 'var(--radius-sm)',
+            padding: '0.4rem 0.6rem', color: 'var(--text-primary)',
+            fontSize: '0.85rem', outline: 'none',
+          }}
+          onFocus={(e) => e.target.style.borderColor = 'var(--orb-listening)'}
+          onBlur={(e) => e.target.style.borderColor = 'var(--text-muted)'}
+        />
+      </div>
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.5rem' }}>

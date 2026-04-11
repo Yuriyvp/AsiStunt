@@ -31,6 +31,9 @@ LISTENING_TIMEOUT_S = 30
 TTS_CHUNK_TIMEOUT_S = 20
 TTS_WORKER_TIMEOUT_S = 60
 
+# Global monotonic start for absolute timestamps in logs
+_T0 = time.monotonic()
+
 
 @dataclass
 class Turn:
@@ -92,6 +95,7 @@ class Orchestrator:
         self._processing_task: asyncio.Task | None = None
         self._barge_in_speech_start: float | None = None
         self._generation_cancelled: bool = False
+        self._pending_speech: np.ndarray | None = None
 
     @property
     def state(self) -> PipelineState:
@@ -105,10 +109,15 @@ class Orchestrator:
     def mood(self) -> MoodState:
         return self._mood
 
+    @staticmethod
+    def _ts() -> str:
+        """Absolute timestamp since orchestrator module load, for log correlation."""
+        return f"[T+{time.monotonic() - _T0:.3f}s]"
+
     def _on_state_change(self, old: PipelineState, new: PipelineState) -> None:
         """Emit state change signal for IPC/UI."""
-        # Will be wired to IPC emitter in Stage 13
-        logger.info("State change: %s → %s", old.value, new.value)
+        logger.info("%s STATE: %s → %s (playlist_empty=%s)",
+                    self._ts(), old.value, new.value, self._playlist.is_empty)
 
     async def start(self) -> None:
         """Start the orchestrator — begins VAD loop."""
@@ -185,6 +194,20 @@ class Orchestrator:
         """Detect language of typed text using multi-strategy detection."""
         return detect_language(text, self._supported_languages)
 
+    def _stop_stale_playback(self) -> None:
+        """Stop any audio still playing from a previous turn.
+
+        After _process_turn transitions to IDLE, the playlist may still have
+        audio playing in the sounddevice callback thread.  When a new turn
+        starts we must stop it so old and new audio don't overlap.
+        """
+        if not self._playlist.is_empty:
+            remaining = self._playlist.text_remaining()
+            logger.info("%s STALE PLAYBACK — clearing playlist (remaining: '%.60s')",
+                        self._ts(), remaining)
+            self._playback.fade_out(15)
+            self._playlist.clear()
+
     async def _vad_loop(self) -> None:
         """Continuous VAD processing loop."""
         while True:
@@ -199,45 +222,88 @@ class Orchestrator:
                             and self._barge_in_speech_start is not None):
                         elapsed = (time.monotonic() - self._barge_in_speech_start) * 1000
                         if elapsed > BARGE_IN_GATE_MS:
+                            logger.info("%s BARGE-IN gate passed (%.0fms) in state %s",
+                                        self._ts(), elapsed, self._state.state.value)
                             await self._execute_barge_in()
                     continue
 
                 if event.type == "speech_start":
+                    logger.info("%s VAD speech_start — state=%s playlist_empty=%s",
+                                self._ts(), self._state.state.value, self._playlist.is_empty)
                     if self._state.state == PipelineState.IDLE:
+                        # Stop any leftover playback from previous turn before listening
+                        self._stop_stale_playback()
                         self._state.transition(PipelineState.LISTENING)
                     elif self._state.state in (PipelineState.SPEAKING, PipelineState.PROCESSING):
                         # User speaks while assistant is generating or speaking → barge-in gate
                         self._barge_in_speech_start = time.monotonic()
+                        logger.info("%s Barge-in gate started (state=%s)",
+                                    self._ts(), self._state.state.value)
 
                 elif event.type == "speech_end":
+                    logger.info("%s VAD speech_end (%.0fms) — state=%s",
+                                self._ts(), event.duration_ms, self._state.state.value)
                     self._barge_in_speech_start = None
 
                     if self._state.state == PipelineState.LISTENING:
                         # Drain speech audio from VAD buffer and transcribe
                         speech_audio = self._vad.drain_speech_samples()
                         if speech_audio is not None:
+                            logger.info("%s Drained %.1fs speech audio → starting ASR",
+                                        self._ts(), len(speech_audio) / 16000)
                             self._state.transition(PipelineState.PROCESSING)
                             self._processing_task = asyncio.create_task(
                                 self._process_voice_turn(speech_audio)
                             )
                         else:
+                            logger.info("%s No speech audio drained — returning to IDLE", self._ts())
                             self._state.transition(PipelineState.IDLE)
+
+                    elif self._state.state == PipelineState.PROCESSING:
+                        # User continued speaking while first segment is being processed.
+                        # Queue the speech — it will be processed after current turn completes.
+                        speech_audio = self._vad.drain_speech_samples()
+                        if speech_audio is not None:
+                            if self._pending_speech is not None:
+                                self._pending_speech = np.concatenate([self._pending_speech, speech_audio])
+                            else:
+                                self._pending_speech = speech_audio
+                            logger.info("%s Speech ended during PROCESSING — queued %d samples (%.1fs), total pending=%.1fs",
+                                        self._ts(), len(speech_audio), len(speech_audio) / 16000,
+                                        len(self._pending_speech) / 16000)
+                        else:
+                            logger.info("%s Speech ended during PROCESSING but no audio drained", self._ts())
 
                     elif self._state.state == PipelineState.INTERRUPTED:
                         # After barge-in, user finished speaking
                         speech_audio = self._vad.drain_speech_samples()
                         if speech_audio is not None:
+                            logger.info("%s Post-barge-in speech drained (%.1fs) → PROCESSING",
+                                        self._ts(), len(speech_audio) / 16000)
                             self._state.transition(PipelineState.PROCESSING)
                             self._processing_task = asyncio.create_task(
                                 self._process_voice_turn(speech_audio)
                             )
                         else:
+                            logger.info("%s Post-barge-in: no speech audio → IDLE", self._ts())
                             self._state.transition(PipelineState.IDLE)
+
+                    elif self._state.state == PipelineState.SPEAKING:
+                        # Speech too short to trigger barge-in (<150ms) — ignore
+                        logger.info("%s Speech ended during SPEAKING (%.0fms, below gate) — ignored",
+                                    self._ts(), event.duration_ms)
+
+                    elif self._state.state == PipelineState.IDLE:
+                        # Spurious speech_end in IDLE — drain to keep buffer clean
+                        drained = self._vad.drain_speech_samples()
+                        if drained is not None:
+                            logger.info("%s Spurious speech_end in IDLE — drained %d samples",
+                                        self._ts(), len(drained))
 
                 # Listening timeout
                 if (self._state.state == PipelineState.LISTENING
                         and self._state.time_in_state > LISTENING_TIMEOUT_S):
-                    logger.info("Listening timeout (%ds)", LISTENING_TIMEOUT_S)
+                    logger.info("%s Listening timeout (%ds)", self._ts(), LISTENING_TIMEOUT_S)
                     self._state.transition(PipelineState.IDLE)
 
             except asyncio.CancelledError:
@@ -248,22 +314,29 @@ class Orchestrator:
 
     async def _execute_barge_in(self) -> None:
         """Execute barge-in: stop audio immediately, cancel pipeline, clean up."""
-        logger.info("Barge-in executing")
+        prev_state = self._state.state
+        logger.info("%s ═══ BARGE-IN START (from %s) ═══", self._ts(), prev_state.value)
 
         # 1. Stop audio output immediately (non-blocking, runs in callback thread)
         self._playback.fade_out(15)
         played = self._playlist.text_played()
-        self._playlist.drop_future()
+        remaining = self._playlist.text_remaining()
+        dropped = self._playlist.drop_future()
+        logger.info("%s  Playback fade-out, dropped %d future chunks. played='%.60s' remaining='%.60s'",
+                    self._ts(), len(dropped), played, remaining)
 
         # 2. Cancel in-flight LLM/TTS task first (don't await LLM cancel — fire and forget)
+        had_task = self._processing_task is not None
         if self._processing_task:
             self._processing_task.cancel()
             self._processing_task = None
+        logger.info("%s  Processing task cancelled=%s", self._ts(), had_task)
 
         # 3. Clear playlist and cancel LLM connection concurrently
         self._playlist.clear()
         # LLM cancel is fast (closes HTTP socket) but don't block barge-in on it
         asyncio.ensure_future(self._llm.cancel())
+        logger.info("%s  Playlist cleared, LLM cancel fired", self._ts())
 
         # 4. Update last assistant turn as interrupted
         if self._dialogue and self._dialogue[-1].role == "assistant":
@@ -272,31 +345,59 @@ class Orchestrator:
 
         self._barge_in_speech_start = None
         self._generation_cancelled = True
+        self._pending_speech = None  # barge-in resets everything
         self._state.transition(PipelineState.INTERRUPTED)
+        logger.info("%s ═══ BARGE-IN DONE → INTERRUPTED ═══", self._ts())
 
     async def _process_voice_turn(self, audio: np.ndarray) -> None:
-        """Process a voice turn: ASR → LLM → TTS pipeline."""
+        """Process a voice turn: ASR → LLM → TTS pipeline.
+
+        After processing, checks for pending speech that arrived during
+        this turn (VAD split the user's utterance at a natural pause).
+        """
         try:
+            logger.info("%s ─── VOICE TURN START (%.1fs audio) ───", self._ts(), len(audio) / 16000)
             asr_start = time.monotonic()
             result = await self._asr.transcribe(audio)
             asr_elapsed = time.monotonic() - asr_start
             text = result["text"]
             lang = result.get("language")
-            logger.info("ASR %.2fs (%.1fs audio): lang=%s text='%s'",
-                        asr_elapsed, len(audio) / 16000, lang, text[:80])
+            logger.info("%s ASR done in %.2fs (%.1fs audio): lang=%s text='%s'",
+                        self._ts(), asr_elapsed, len(audio) / 16000, lang, text[:120])
             if not text.strip():
-                self._state.transition(PipelineState.IDLE)
+                logger.info("%s ASR returned empty text", self._ts())
+                # Empty transcription — but still check for pending speech
+                if self._pending_speech is not None:
+                    pending = self._pending_speech
+                    self._pending_speech = None
+                    logger.info("%s Empty ASR but pending speech exists — processing %d samples (%.1fs)",
+                                self._ts(), len(pending), len(pending) / 16000)
+                    await self._process_voice_turn(pending)
+                else:
+                    self._state.transition(PipelineState.IDLE)
                 return
 
             if lang and lang != self._current_language:
                 self._current_language = lang
                 self._tts.set_language(lang)
-                logger.info("Language switched to '%s'", lang)
+                logger.info("%s Language switched to '%s'", self._ts(), lang)
             await self._process_turn(text, source="voice")
+
+            # Process speech that arrived while this turn was running
+            if self._pending_speech is not None:
+                pending = self._pending_speech
+                self._pending_speech = None
+                logger.info("%s ─── PENDING SPEECH found (%d samples, %.1fs) — starting new voice turn ───",
+                            self._ts(), len(pending), len(pending) / 16000)
+                self._state.transition(PipelineState.PROCESSING)
+                await self._process_voice_turn(pending)
+
         except asyncio.CancelledError:
+            logger.info("%s Voice turn CANCELLED", self._ts())
             raise
         except Exception:
-            logger.exception("Error in voice turn processing")
+            logger.exception("%s Error in voice turn processing", self._ts())
+            self._pending_speech = None  # clear on error to avoid stale audio
             self._state.transition(PipelineState.IDLE)
 
     async def _process_turn(self, user_text: str, source: str) -> None:
@@ -311,6 +412,10 @@ class Orchestrator:
         turn_language = self._current_language  # snapshot language for this turn
         turn_start = time.monotonic()
         self._generation_cancelled = False
+
+        logger.info("%s ═══ PROCESS TURN START (source=%s, lang=%s) ═══ text='%s'",
+                    self._ts(), source, turn_language, user_text[:120])
+
         try:
             # Record user turn
             user_turn = Turn(
@@ -318,12 +423,14 @@ class Orchestrator:
                 timestamp=time.time(),
             )
             self._dialogue.append(user_turn)
+            logger.info("%s Dialogue now has %d turns", self._ts(), len(self._dialogue))
 
             # Filler (conditional)
             self._fillers.record_turn()
             filler = self._fillers.get_filler()
             if filler:
                 self._playlist.append(filler)
+                logger.info("%s Filler queued", self._ts())
 
             # Build messages for LLM
             lang_names = {"en": "English", "hr": "Croatian", "ru": "Russian",
@@ -340,6 +447,7 @@ class Orchestrator:
             ]
             for turn in self._dialogue[-10:]:  # last 10 turns
                 messages.append({"role": turn.role, "content": turn.content})
+            logger.info("%s LLM context: %d messages", self._ts(), len(messages))
 
             # Start TTS worker — consumes chunks from queue, synthesizes in order
             tts_chunk_idx = 0
@@ -349,12 +457,17 @@ class Orchestrator:
                 while True:
                     item = await tts_queue.get()
                     if item is None:
+                        logger.info("%s TTS worker received sentinel — stopping", self._ts())
                         break  # sentinel — no more chunks
+                    if self._generation_cancelled:
+                        logger.info("%s TTS worker skipping chunk (generation cancelled)", self._ts())
+                        continue
                     tts_chunk_idx += 1
                     chunk_text, chunk_lang = item
-                    logger.info("[%.3fs] TTS worker starting chunk %d (%d chars)",
-                                time.monotonic() - turn_start, tts_chunk_idx, len(chunk_text))
+                    logger.info("%s TTS worker chunk %d START (%d chars): '%.50s'",
+                                self._ts(), tts_chunk_idx, len(chunk_text), chunk_text)
                     await self._synthesize_and_queue(chunk_text, chunk_lang)
+                    logger.info("%s TTS worker chunk %d DONE", self._ts(), tts_chunk_idx)
 
             tts_worker = asyncio.create_task(_tts_consumer())
 
@@ -372,14 +485,16 @@ class Orchestrator:
             # Reasoning is off by default for voice — fast responses matter.
             # Orchestrator can enable it for complex queries in the future.
             use_thinking = False
-            logger.info("[%.3fs] LLM streaming started (thinking=%s)", time.monotonic() - turn_start, use_thinking)
+            logger.info("%s LLM streaming started (thinking=%s)", self._ts(), use_thinking)
             async for token in self._llm.stream(messages, thinking=use_thinking):
+                if self._generation_cancelled:
+                    logger.info("%s LLM token ignored — generation cancelled (token #%d)", self._ts(), token_count + 1)
+                    break
                 token_count += 1
                 if first_token_at is None:
                     first_token_at = time.monotonic()
-                    logger.info("[%.3fs] LLM first token (TTFT=%.3fs)",
-                                first_token_at - turn_start,
-                                first_token_at - llm_start)
+                    logger.info("%s LLM FIRST TOKEN (TTFT=%.3fs)",
+                                self._ts(), first_token_at - llm_start)
 
                 clean = mood_parser.feed(token)
                 if clean:
@@ -388,9 +503,8 @@ class Orchestrator:
                     if chunk_text:
                         chunk_count += 1
                         tts_queue.put_nowait((chunk_text, turn_language))
-                        logger.info("[%.3fs] Chunk %d queued (%d chars): %.50s",
-                                    time.monotonic() - turn_start,
-                                    chunk_count, len(chunk_text), chunk_text)
+                        logger.info("%s Chunk %d queued (%d chars): '%.60s'",
+                                    self._ts(), chunk_count, len(chunk_text), chunk_text)
                         if self._state.state == PipelineState.PROCESSING:
                             self._state.transition(PipelineState.SPEAKING)
 
@@ -402,30 +516,31 @@ class Orchestrator:
                 if chunk_text:
                     chunk_count += 1
                     tts_queue.put_nowait((chunk_text, turn_language))
-                    logger.info("[%.3fs] Chunk %d queued (finalize, %d chars): %.50s",
-                                time.monotonic() - turn_start,
-                                chunk_count, len(chunk_text), chunk_text)
+                    logger.info("%s Chunk %d queued (finalize, %d chars): '%.60s'",
+                                self._ts(), chunk_count, len(chunk_text), chunk_text)
 
             final_chunk = chunker.flush()
             if final_chunk:
                 chunk_count += 1
                 tts_queue.put_nowait((final_chunk, turn_language))
-                logger.info("[%.3fs] Chunk %d queued (flush, %d chars): %.50s",
-                            time.monotonic() - turn_start,
-                            chunk_count, len(final_chunk), final_chunk)
+                logger.info("%s Chunk %d queued (flush, %d chars): '%.60s'",
+                            self._ts(), chunk_count, len(final_chunk), final_chunk)
 
             llm_elapsed = time.monotonic() - llm_start
-            logger.info("[%.3fs] LLM done: %.2fs, %d tokens, %d chunks",
-                        time.monotonic() - turn_start,
-                        llm_elapsed, token_count, chunk_count)
+            speed = token_count / llm_elapsed if llm_elapsed > 0 else 0
+            logger.info("%s LLM DONE: %.2fs, %d tokens (%.1f t/s), %d chunks",
+                        self._ts(), llm_elapsed, token_count, speed, chunk_count)
 
             # Signal TTS worker to finish and wait with timeout
             tts_queue.put_nowait(None)
+            tts_wait_start = time.monotonic()
             try:
                 await asyncio.wait_for(tts_worker, timeout=TTS_WORKER_TIMEOUT_S)
             except asyncio.TimeoutError:
-                logger.error("TTS worker timed out after %ds, cancelling", TTS_WORKER_TIMEOUT_S)
+                logger.error("%s TTS worker timed out after %ds, cancelling", self._ts(), TTS_WORKER_TIMEOUT_S)
                 tts_worker.cancel()
+            tts_wait = time.monotonic() - tts_wait_start
+            logger.info("%s TTS worker finished (waited %.2fs)", self._ts(), tts_wait)
 
             # Record assistant turn
             response_text = "".join(full_response)
@@ -439,25 +554,28 @@ class Orchestrator:
             # Don't block on playback — transition to IDLE so user can
             # start a new turn while audio is still playing.  Barge-in
             # handles interruption if the user speaks during playback.
-            tts_elapsed = time.monotonic() - turn_start - llm_elapsed
             total = time.monotonic() - turn_start
-            logger.info("[%.3fs] TURN DONE: total=%.2fs LLM=%.2fs TTS_wait=%.2fs chunks=%d tokens=%d",
-                        time.monotonic() - turn_start,
-                        total, llm_elapsed, tts_elapsed, chunk_count, token_count)
+            logger.info("%s ═══ TURN DONE: total=%.2fs LLM=%.2fs TTS_wait=%.2fs chunks=%d tokens=%d playlist_empty=%s ═══",
+                        self._ts(), total, llm_elapsed, tts_wait, chunk_count, token_count,
+                        self._playlist.is_empty)
             self._state.transition(PipelineState.IDLE)
 
         except asyncio.CancelledError:
+            logger.info("%s PROCESS TURN CANCELLED", self._ts())
             if tts_worker and not tts_worker.done():
                 tts_worker.cancel()
             raise
         except Exception:
-            logger.exception("Error in turn processing")
+            logger.exception("%s Error in turn processing", self._ts())
             if tts_worker and not tts_worker.done():
                 tts_worker.cancel()
             self._state.transition(PipelineState.IDLE)
 
     async def _synthesize_and_queue(self, text: str, lang: str) -> None:
         """Synthesize a text chunk and add to playlist."""
+        if self._generation_cancelled:
+            logger.info("%s TTS skipped (cancelled): '%.40s'", self._ts(), text)
+            return
         voice_params = self._mood.get_voice_params()
         voice_params["language"] = lang
         t0 = time.monotonic()
@@ -468,12 +586,16 @@ class Orchestrator:
             )
             elapsed = time.monotonic() - t0
             duration = len(audio) / 24000
-            logger.info("TTS [%s] %.2fs synth → %.2fs audio (RTF=%.2f): %.40s",
-                        lang, elapsed, duration, elapsed / duration if duration else 0, text)
+            logger.info("%s TTS [%s] %.2fs synth → %.2fs audio (RTF=%.2f): '%.50s'",
+                        self._ts(), lang, elapsed, duration,
+                        elapsed / duration if duration else 0, text)
+            if self._generation_cancelled:
+                logger.info("%s TTS result discarded (cancelled during synth): '%.40s'", self._ts(), text)
+                return
             self._playlist.append(AudioChunk(audio=audio, text=text, source="tts"))
             if self._on_chunk_synthesized:
                 self._on_chunk_synthesized(text)
         except asyncio.TimeoutError:
-            logger.error("TTS chunk timed out after %ds: %s", TTS_CHUNK_TIMEOUT_S, text[:40])
+            logger.error("%s TTS chunk timed out after %ds: '%.40s'", self._ts(), TTS_CHUNK_TIMEOUT_S, text)
         except Exception:
-            logger.exception("TTS synthesis failed for: %s", text[:40])
+            logger.exception("%s TTS synthesis failed for: '%.40s'", self._ts(), text)

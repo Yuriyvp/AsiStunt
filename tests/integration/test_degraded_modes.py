@@ -16,22 +16,32 @@ from voice_assistant.process.manager import ProcessManager, LlamaCppProcess, STA
 
 
 def _make_soul_config(**overrides):
-    """Create a mock SoulConfig."""
+    """Create a mock SoulConfig (personality only)."""
     soul = MagicMock()
     soul.name = "test_persona"
-    soul.voice_method = "default"
-    soul.voice_reference_audio = None
-    soul.voice_description = "warm and friendly"
-    soul.llm_model = "models/test.gguf"
-    soul.llm_port = 8080
-    soul.llm_ctx_size = 8192
-    soul.llm_gpu_layers = 999
-    soul.llm_threads = 4
-    soul.llm_batch_size = 4096
-    soul.llm_flash_attn = True
+    soul.personality = "You are a test bot."
+    soul.backstory = "Created for testing."
     for k, v in overrides.items():
         setattr(soul, k, v)
     return soul
+
+
+def _make_settings(**overrides):
+    """Create a mock Settings (infrastructure)."""
+    s = MagicMock()
+    s.llm_model = "models/test.gguf"
+    s.llm_port = 8080
+    s.llm_ctx_size = 8192
+    s.llm_gpu_layers = 999
+    s.llm_threads = 4
+    s.llm_batch_size = 4096
+    s.llm_flash_attn = True
+    s.voice_languages = []
+    s.default_language = "en"
+    s.sampling = {}
+    for k, v in overrides.items():
+        setattr(s, k, v)
+    return s
 
 
 def _make_ipc():
@@ -55,19 +65,19 @@ class TestDetermineMode:
     """Test PipelineMode determination from component availability."""
 
     def test_full_mode(self):
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc())
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc(), settings=_make_settings())
         assert pm._determine_mode(llm_ok=True, tts_ok=True) == PipelineMode.FULL
 
     def test_text_only_mode(self):
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc())
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc(), settings=_make_settings())
         assert pm._determine_mode(llm_ok=True, tts_ok=False) == PipelineMode.TEXT_ONLY
 
     def test_transcribe_mode(self):
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc())
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc(), settings=_make_settings())
         assert pm._determine_mode(llm_ok=False, tts_ok=True) == PipelineMode.TRANSCRIBE
 
     def test_disabled_mode(self):
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc())
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc(), settings=_make_settings())
         assert pm._determine_mode(llm_ok=False, tts_ok=False) == PipelineMode.DISABLED
 
 
@@ -76,20 +86,20 @@ class TestErrorEscalation:
 
     def test_first_failure_count(self):
         """First failure records count=1."""
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc())
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc(), settings=_make_settings())
         count = pm.record_failure("llm")
         assert count == 1
 
     def test_consecutive_failures_increment(self):
         """Consecutive failures increment the counter."""
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc())
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc(), settings=_make_settings())
         pm.record_failure("llm")
         count = pm.record_failure("llm")
         assert count == 2
 
     def test_stability_window_resets_counter(self):
         """Counter resets after STABILITY_WINDOW_S of no failures."""
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc())
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), _make_ipc(), settings=_make_settings())
         pm.record_failure("llm")
         pm.record_failure("llm")
 
@@ -103,7 +113,7 @@ class TestErrorEscalation:
     async def test_first_failure_silent_restart(self):
         """First failure attempts silent restart."""
         ipc = _make_ipc()
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc)
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc, settings=_make_settings())
 
         # Mock a running LLM process
         mock_proc = MagicMock(spec=LlamaCppProcess)
@@ -127,7 +137,7 @@ class TestErrorEscalation:
         """Second failure attempts restart with reduced VRAM settings."""
         ipc = _make_ipc()
         vram = _make_vram_guard(under_pressure=True)
-        pm = ProcessManager(_make_soul_config(), vram, ipc)
+        pm = ProcessManager(_make_soul_config(), vram, ipc, settings=_make_settings())
 
         # Pre-record first failure
         pm._failure_counts["llm"] = 1
@@ -156,7 +166,7 @@ class TestErrorEscalation:
     async def test_third_failure_degrades_pipeline(self):
         """Third failure stops retrying and degrades the pipeline mode."""
         ipc = _make_ipc()
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc)
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc, settings=_make_settings())
 
         # Pre-record two failures
         pm._failure_counts["llm"] = 2
@@ -176,7 +186,7 @@ class TestErrorEscalation:
     async def test_tts_failure_degrades_to_text_only(self):
         """TTS component failure with LLM still running -> TEXT_ONLY."""
         ipc = _make_ipc()
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc)
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc, settings=_make_settings())
 
         pm._failure_counts["tts"] = 2
         pm._failure_times["tts"] = time.monotonic()
@@ -194,7 +204,7 @@ class TestErrorEscalation:
     async def test_both_down_disabled(self):
         """Both LLM and TTS down -> DISABLED."""
         ipc = _make_ipc()
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc)
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc, settings=_make_settings())
 
         # LLM already failed
         pm._failure_counts["llm"] = 3
@@ -219,7 +229,7 @@ class TestStartupSequencing:
         """If LLM fails to start, mode degrades to TRANSCRIBE."""
         ipc = _make_ipc()
         soul = _make_soul_config()
-        pm = ProcessManager(soul, _make_vram_guard(), ipc)
+        pm = ProcessManager(soul, _make_vram_guard(), ipc, settings=_make_settings())
 
         with patch.object(LlamaCppProcess, 'start',
                          new_callable=AsyncMock,
@@ -235,7 +245,7 @@ class TestStartupSequencing:
         """Successful startup of all components -> FULL mode."""
         ipc = _make_ipc()
         soul = _make_soul_config()
-        pm = ProcessManager(soul, _make_vram_guard(), ipc)
+        pm = ProcessManager(soul, _make_vram_guard(), ipc, settings=_make_settings())
 
         with patch.object(LlamaCppProcess, 'start', new_callable=AsyncMock):
             with patch.object(LlamaCppProcess, '__init__', return_value=None):
@@ -250,7 +260,7 @@ class TestShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_stops_llm(self):
         ipc = _make_ipc()
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc)
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc, settings=_make_settings())
 
         mock_proc = MagicMock(spec=LlamaCppProcess)
         mock_proc.stop = AsyncMock()
@@ -266,7 +276,7 @@ class TestShutdown:
     async def test_shutdown_no_process(self):
         """Shutdown with no process running should not crash."""
         ipc = _make_ipc()
-        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc)
+        pm = ProcessManager(_make_soul_config(), _make_vram_guard(), ipc, settings=_make_settings())
         pm._llm_process = None
 
         await pm.shutdown()  # should not raise

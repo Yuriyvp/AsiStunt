@@ -158,8 +158,9 @@ class ProcessManager:
     Counter resets after 5 minutes of stable operation.
     """
 
-    def __init__(self, soul_config, vram_guard, ipc_emitter):
+    def __init__(self, soul_config, vram_guard, ipc_emitter, settings=None):
         self._soul = soul_config
+        self._settings = settings  # infrastructure settings (LLM, voice, etc.)
         self._vram = vram_guard
         self._ipc = ipc_emitter
         self._failure_counts: dict[str, int] = {}
@@ -208,14 +209,14 @@ class ProcessManager:
             # Step 1: llama.cpp server
             self._set_component_state("llm", "starting")
             self._llm_process = LlamaCppProcess(
-                server_binary=str(Path(self._soul.llm_model).parent.parent / "bin" / "llama-server"),
-                model_path=self._soul.llm_model,
-                port=self._soul.llm_port,
-                ctx_size=self._soul.llm_ctx_size,
-                gpu_layers=self._soul.llm_gpu_layers,
-                threads=self._soul.llm_threads,
-                batch_size=self._soul.llm_batch_size,
-                flash_attn=self._soul.llm_flash_attn,
+                server_binary=str(Path(self._settings.llm_model).parent.parent / "bin" / "llama-server"),
+                model_path=self._settings.llm_model,
+                port=self._settings.llm_port,
+                ctx_size=self._settings.llm_ctx_size,
+                gpu_layers=self._settings.llm_gpu_layers,
+                threads=self._settings.llm_threads,
+                batch_size=self._settings.llm_batch_size,
+                flash_attn=self._settings.llm_flash_attn,
             )
             try:
                 await self._llm_process.start()
@@ -236,8 +237,8 @@ class ProcessManager:
                 await self._tts.load()
 
                 # Load cached voice profiles for each configured language
-                for vl in self._soul.voice_languages:
-                    profile_path = get_profile_path(f"{self._soul.name}_{vl.id}")
+                for vl in self._settings.voice_languages:
+                    profile_path = get_profile_path(f"voice_{vl.id}")
                     if profile_path.exists():
                         try:
                             self._tts.load_voice_profile_sync(vl.id, str(profile_path))
@@ -245,7 +246,7 @@ class ProcessManager:
                         except Exception as e:
                             logger.warning("Failed to load profile for '%s': %s", vl.id, e)
 
-                self._tts.set_language(self._soul.default_language)
+                self._tts.set_language(self._settings.default_language)
                 tts_ok = True
                 self._set_component_state("tts", "ready")
             except Exception as e:
@@ -268,7 +269,7 @@ class ProcessManager:
             self._set_component_state("asr", "starting")
             try:
                 from voice_assistant.adapters.parakeet_asr import ParakeetASR
-                supported = [vl.id for vl in self._soul.voice_languages] or ["en"]
+                supported = [vl.id for vl in self._settings.voice_languages] or ["en"]
                 self._asr = ParakeetASR(supported_languages=supported)
                 self._set_component_state("asr", "ready")
             except Exception as e:
@@ -349,13 +350,13 @@ class ProcessManager:
                         await self._llm_process.stop()
                     self._llm_process = LlamaCppProcess(
                         server_binary=self._llm_process._binary if self._llm_process else "llama-server",
-                        model_path=self._soul.llm_model,
-                        port=self._soul.llm_port,
+                        model_path=self._settings.llm_model,
+                        port=self._settings.llm_port,
                         ctx_size=6144,  # reduced from 8192
-                        gpu_layers=self._soul.llm_gpu_layers,
-                        threads=self._soul.llm_threads,
-                        batch_size=self._soul.llm_batch_size,
-                        flash_attn=self._soul.llm_flash_attn,
+                        gpu_layers=self._settings.llm_gpu_layers,
+                        threads=self._settings.llm_threads,
+                        batch_size=self._settings.llm_batch_size,
+                        flash_attn=self._settings.llm_flash_attn,
                         cache_type_k="q4_0",  # quantized KV
                         cache_type_v="q4_0",
                     )
@@ -397,14 +398,14 @@ class ProcessManager:
                     self._set_component_state("llm", "ready")
                     return "ready"
                 self._llm_process = LlamaCppProcess(
-                    server_binary=str(Path(self._soul.llm_model).parent.parent / "bin" / "llama-server"),
-                    model_path=self._soul.llm_model,
-                    port=self._soul.llm_port,
-                    ctx_size=self._soul.llm_ctx_size,
-                    gpu_layers=self._soul.llm_gpu_layers,
-                    threads=self._soul.llm_threads,
-                    batch_size=self._soul.llm_batch_size,
-                    flash_attn=self._soul.llm_flash_attn,
+                    server_binary=str(Path(self._settings.llm_model).parent.parent / "bin" / "llama-server"),
+                    model_path=self._settings.llm_model,
+                    port=self._settings.llm_port,
+                    ctx_size=self._settings.llm_ctx_size,
+                    gpu_layers=self._settings.llm_gpu_layers,
+                    threads=self._settings.llm_threads,
+                    batch_size=self._settings.llm_batch_size,
+                    flash_attn=self._settings.llm_flash_attn,
                 )
                 await self._llm_process.start()
 
@@ -417,21 +418,21 @@ class ProcessManager:
                 self._tts = OmniVoiceTTS()
                 await self._tts.load()
                 # Load any cached voice profiles
-                for vl in self._soul.voice_languages:
-                    profile_path = get_profile_path(f"{self._soul.name}_{vl.id}")
+                for vl in self._settings.voice_languages:
+                    profile_path = get_profile_path(f"voice_{vl.id}")
                     if profile_path.exists():
                         try:
                             self._tts.load_voice_profile_sync(vl.id, str(profile_path))
                         except Exception:
                             pass
-                self._tts.set_language(self._soul.default_language)
+                self._tts.set_language(self._settings.default_language)
 
             elif component == "asr":
                 if self._asr is not None:
                     self._set_component_state("asr", "ready")
                     return "ready"
                 from voice_assistant.adapters.parakeet_asr import ParakeetASR
-                supported = [vl.id for vl in self._soul.voice_languages] or ["en"]
+                supported = [vl.id for vl in self._settings.voice_languages] or ["en"]
                 self._asr = ParakeetASR(supported_languages=supported)
 
             elif component == "vad":

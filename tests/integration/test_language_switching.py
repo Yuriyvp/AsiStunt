@@ -185,8 +185,8 @@ class TestLanguageSwitching:
         assert orch._current_language == "en"
 
     @pytest.mark.asyncio
-    async def test_language_preserved_on_short_text_input(self):
-        """Short text input should not change the detected language."""
+    async def test_definitive_word_switches_language(self):
+        """Short definitive words like 'ok' should switch the language."""
         components = _make_components()
         orch = Orchestrator(**components, supported_languages=["hr", "en", "ru"])
         orch._current_language = "hr"
@@ -195,7 +195,21 @@ class TestLanguageSwitching:
         if orch._processing_task:
             await asyncio.wait_for(orch._processing_task, timeout=5.0)
 
-        # Text too short for detection — language preserved
+        # "ok" is a definitive English word — language switches
+        assert orch._current_language == "en"
+
+    @pytest.mark.asyncio
+    async def test_language_preserved_on_ambiguous_short_text(self):
+        """Short ambiguous text (not a definitive word) preserves language."""
+        components = _make_components()
+        orch = Orchestrator(**components, supported_languages=["hr", "en", "ru"])
+        orch._current_language = "hr"
+
+        await orch.handle_text_input("hmm")
+        if orch._processing_task:
+            await asyncio.wait_for(orch._processing_task, timeout=5.0)
+
+        # "hmm" is not a definitive word — language preserved
         assert orch._current_language == "hr"
 
     @pytest.mark.asyncio

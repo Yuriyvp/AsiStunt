@@ -11,16 +11,21 @@ from voice_assistant.process.manager import ProcessManager, STABILITY_WINDOW_S
 
 class MockSoulConfig:
     name = "TestBot"
-    voice_method = "description"
-    voice_description = "test voice"
-    voice_reference_audio = None
-    llm_model = "models/test.gguf"
+    personality = "You are a test bot."
+    backstory = "Created for testing."
+
+
+class MockSettings:
+    llm_model = "/nonexistent/models/test.gguf"
     llm_port = 8080
     llm_ctx_size = 8192
     llm_gpu_layers = 999
     llm_threads = 4
     llm_batch_size = 512
     llm_flash_attn = True
+    voice_languages = []
+    default_language = "en"
+    sampling = {}
 
 
 class MockVRAMGuard:
@@ -55,46 +60,46 @@ class MockEmitter:
 
 class TestProcessManager:
     def test_initial_mode_disabled(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm.mode == PipelineMode.DISABLED
 
     def test_determine_mode_full(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm._determine_mode(llm_ok=True, tts_ok=True) == PipelineMode.FULL
 
     def test_determine_mode_text_only(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm._determine_mode(llm_ok=True, tts_ok=False) == PipelineMode.TEXT_ONLY
 
     def test_determine_mode_transcribe(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm._determine_mode(llm_ok=False, tts_ok=True) == PipelineMode.TRANSCRIBE
 
     def test_determine_mode_disabled(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm._determine_mode(llm_ok=False, tts_ok=False) == PipelineMode.DISABLED
 
 
 class TestErrorEscalation:
     def test_first_failure_returns_1(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm.record_failure("llm") == 1
 
     def test_consecutive_failures_increment(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm.record_failure("llm") == 1
         assert pm.record_failure("llm") == 2
         assert pm.record_failure("llm") == 3
 
     def test_independent_component_counters(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         assert pm.record_failure("llm") == 1
         assert pm.record_failure("tts") == 1
         assert pm.record_failure("llm") == 2
         assert pm.record_failure("tts") == 2
 
     def test_counter_resets_after_stability_window(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         pm.record_failure("llm")
         pm.record_failure("llm")
         assert pm._failure_counts["llm"] == 2
@@ -104,7 +109,7 @@ class TestErrorEscalation:
         assert pm.record_failure("llm") == 1  # reset
 
     def test_counter_does_not_reset_within_window(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         pm.record_failure("llm")
         # Time is within window — no reset
         assert pm.record_failure("llm") == 2
@@ -112,7 +117,7 @@ class TestErrorEscalation:
     @pytest.mark.asyncio
     async def test_handle_failure_emits_error(self):
         emitter = MockEmitter()
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter)
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter, settings=MockSettings())
         pm._mode = PipelineMode.FULL
 
         await pm.handle_failure("tts")
@@ -124,7 +129,7 @@ class TestErrorEscalation:
     @pytest.mark.asyncio
     async def test_handle_failure_third_time_degrades(self):
         emitter = MockEmitter()
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter)
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter, settings=MockSettings())
         pm._mode = PipelineMode.FULL
 
         # Simulate 3 failures
@@ -141,7 +146,7 @@ class TestStartupSequence:
     async def test_startup_emits_events(self):
         """Startup should emit process_state_change events."""
         emitter = MockEmitter()
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter)
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter, settings=MockSettings())
 
         # Startup will fail (no real llama-server) but should emit events
         mode = await pm.startup()
@@ -155,7 +160,7 @@ class TestStartupSequence:
     async def test_startup_without_llm_returns_degraded(self):
         """If LLM fails to start, mode should be degraded."""
         emitter = MockEmitter()
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter)
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter, settings=MockSettings())
         mode = await pm.startup()
 
         # No real binary — LLM will fail
@@ -167,7 +172,7 @@ class TestStartupSequence:
         emitter = MockEmitter()
         soul = MockSoulConfig()
         soul.voice_method = "description"
-        pm = ProcessManager(soul, MockVRAMGuard(), emitter)
+        pm = ProcessManager(soul, MockVRAMGuard(), emitter, settings=MockSettings())
         await pm.startup()
 
         clone_events = [e for e in emitter.events if e.get("type") == "voice_clone_progress"]
@@ -176,14 +181,14 @@ class TestStartupSequence:
     @pytest.mark.asyncio
     async def test_shutdown_resets_mode(self):
         emitter = MockEmitter()
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter)
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), emitter, settings=MockSettings())
         pm._mode = PipelineMode.FULL
         await pm.shutdown()
         assert pm.mode == PipelineMode.DISABLED
 
     @pytest.mark.asyncio
     async def test_shutdown_safe_when_nothing_started(self):
-        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter())
+        pm = ProcessManager(MockSoulConfig(), MockVRAMGuard(), MockEmitter(), settings=MockSettings())
         await pm.shutdown()  # should not raise
 
 
