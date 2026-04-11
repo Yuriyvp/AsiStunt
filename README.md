@@ -35,7 +35,7 @@ Microphone → RNNoise → Silero VAD → Parakeet ASR → llama.cpp LLM
 |---|---|---|
 | Voice Activity Detection | Silero VAD v5 | CPU (sherpa-onnx) |
 | Speech Recognition | Parakeet TDT 0.6B v3 INT8 | CPU (sherpa-onnx) |
-| Language Model | Gemma 4 26B-A4B IQ4_XS | GPU (llama.cpp subprocess) |
+| Language Model | Qwen3.5 35B-A3B or Gemma 4 26B-A4B (IQ4_XS) | GPU (llama.cpp subprocess) |
 | Text-to-Speech | OmniVoice (k2-fsa) | GPU (in-process, float16) |
 | Audio Denoising | RNNoise | CPU (librnnoise.so via ctypes) |
 
@@ -82,13 +82,17 @@ Place models in the `models/` directory:
 
 ```
 models/
-├── gemma-4-26B-A4B-it-UD-IQ4_XS.gguf    # LLM (quantized GGUF)
+├── Qwen3.5-35B-A3B-*.gguf                 # LLM (any GGUF model)
 ├── silero_vad.onnx                         # VAD model
 └── sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/  # ASR model
-    ├── model.onnx
+    ├── encoder.int8.onnx
+    ├── decoder.int8.onnx
+    ├── joiner.int8.onnx
     ├── tokens.txt
     └── ...
 ```
+
+The LLM model is configured in `config/settings.yaml` — any GGUF model compatible with llama.cpp works.
 
 ### 4. Set up llama.cpp
 
@@ -149,52 +153,68 @@ The app starts in **compact mode** — a draggable orb with mic controls:
 
 Right-click the tray icon for: New Conversation, Settings, Debug, Quit.
 
-### SOUL Configuration
+### Configuration
 
-Persona files live in `soul/` as YAML:
+Configuration is split into two files:
+
+**`soul/default.soul.yaml`** — Persona (sent to LLM as system prompt):
 
 ```yaml
-name: Aria
-version: 2
-personality: "You are Aria, a warm and witty conversational partner..."
-backstory: "Created to be a helpful companion..."
-voice:
-  method: description  # or "clone"
-  description: "A warm, friendly female voice"
-  # reference_audio: path/to/sample.wav  # for clone method
-  filler_style: natural
+name: Joi
+personality: >
+  You are Joi — warm, perceptive, and genuinely curious.
+  You listen more than you speak. You pick up on mood shifts
+  and mirror them naturally.
+backstory: >
+  Joi was born from the idea that a companion should feel
+  like a real presence — not a tool, not a servant.
 mood:
   default: warm
-  range: [neutral, warm, playful, calm, concerned]
-language:
-  available: [en, hr, de]
-  default: hr
+  range: [calm, warm, playful, concerned, tender]
+```
+
+**`config/settings.yaml`** — Infrastructure (used at startup only, never sent to LLM):
+
+```yaml
 llm:
-  model: gemma-4-26B-A4B-it-UD-IQ4_XS.gguf
+  model: models/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf
   ctx_size: 8192
-  gpu_layers: 99
   flash_attn: true
+  gpu_layers: 999
+  port: 8080
   sampling:
     temperature: 0.75
     top_p: 0.9
-    top_k: 40
-memory:
-  summary_style: narrative
+voice:
+  languages:
+  - id: hr
+    reference_audio: ViceClone/HR v3.wav
+  - id: en
+    reference_audio: ViceClone/EN v3.wav
+  - id: ru
+    reference_audio: ViceClone/RU v3.wav
+language:
+  default: ru
 ```
+
+Voice profiles are stored as `voice_{lang}.voiceprofile` — independent of persona name.
 
 ## Testing
 
 ```bash
 source .venv/bin/activate
 
-# Run all tests (231 tests, ~13s)
+# Run all tests (266 tests)
 pytest tests/ -v
 
-# Unit tests only (173 tests)
+# Unit tests only
 pytest tests/unit/ -v
 
-# Integration tests only (58 tests)
+# Integration tests only
 pytest tests/integration/ -v
+
+# Stress test (requires running models, ~5 min)
+python tests/stress/stress_test.py 2>/tmp/stress.log
 
 # Specific test suites
 pytest tests/integration/test_barge_in.py -v
