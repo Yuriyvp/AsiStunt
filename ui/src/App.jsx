@@ -175,6 +175,7 @@ const STATUS_COLORS = {
   ready: '#56c453',
   restarting: '#f5bf4f',
   restarting_optimized: '#cc8844',
+  warming: '#6bb3e0',
   error: '#ed6a5e',
   failed: '#ed6a5e',
 };
@@ -186,6 +187,7 @@ const STATUS_LABELS = {
   ready: 'Ready',
   restarting: 'Restarting…',
   restarting_optimized: 'Optimizing…',
+  warming: 'Warming up…',
   error: 'Error',
   failed: 'Failed',
 };
@@ -223,7 +225,7 @@ function ComponentStatus({ componentStates, sendCommand, compact = false }) {
       {COMPONENTS.map(comp => {
         const s = componentStates[comp.key] || 'idle';
         const color = STATUS_COLORS[s] || 'var(--text-muted)';
-        const isLoading = s === 'starting' || s === 'restarting' || s === 'restarting_optimized' || s === 'stopping';
+        const isLoading = s === 'starting' || s === 'restarting' || s === 'restarting_optimized' || s === 'stopping' || s === 'warming';
         const isRunning = s === 'ready';
         const isStopped = s === 'idle' || s === 'error' || s === 'failed';
 

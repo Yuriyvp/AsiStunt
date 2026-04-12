@@ -161,10 +161,28 @@ class SileroVAD:
             return None
         return np.concatenate(segments)
 
+    def clear_segments(self) -> int:
+        """Discard stored speech segments without resetting detection state.
+
+        Use during barge-in: clears orphaned segments but keeps tracking
+        current speech (user is still speaking).
+        """
+        count = 0
+        while not self._vad.empty():
+            self._vad.pop()
+            count += 1
+        return count
+
     def reset(self) -> None:
         """Reset VAD state (e.g., after barge-in)."""
         self._is_speech = False
         self._buf_len = 0
+        self._vad.reset()
+
+    def warmup(self) -> None:
+        """Run a dummy chunk to trigger ONNX Runtime first-call overhead."""
+        dummy = np.zeros(self._window_size, dtype=np.float32)
+        self._vad.accept_waveform(dummy)
         self._vad.reset()
 
     def flush(self) -> None:

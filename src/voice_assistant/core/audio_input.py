@@ -215,6 +215,21 @@ class AudioInput:
         self._stream.start()
         logger.info("Audio input started: %s Hz, %d ms frames", SAMPLE_RATE, FRAME_DURATION_MS)
 
+    def flush_queue(self) -> int:
+        """Discard all queued audio chunks. Returns count of discarded chunks.
+
+        Called during barge-in to prevent VAD from processing stale audio
+        that accumulated in the sounddevice callback queue.
+        """
+        count = 0
+        while not self._chunk_queue.empty():
+            try:
+                self._chunk_queue.get_nowait()
+                count += 1
+            except asyncio.QueueEmpty:
+                break
+        return count
+
     async def read_chunk(self) -> np.ndarray:
         """Get the next processed (denoised + normalized) 30ms chunk.
 

@@ -7,6 +7,7 @@ instruct-based voice design (gated behind use_instruct flag).
 Output: 24 kHz f32 numpy arrays.
 """
 import asyncio
+import concurrent.futures
 import logging
 import time
 
@@ -31,11 +32,17 @@ class OmniVoiceTTS(TTSPort):
         self._voice_prompts: dict = {}
         self._active_language: str = "en"
         self._use_instruct = use_instruct
+        # Single-thread executor: torch.compile(mode="reduce-overhead") uses CUDA graphs
+        # which store state in thread-local storage. All TTS calls must run on the same
+        # thread to avoid AssertionError in cudagraph_trees.
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tts"
+        )
 
     async def load(self) -> None:
         """Load OmniVoice model (no voice profiles yet — load those separately)."""
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._load_sync)
+        await loop.run_in_executor(self._executor, self._load_sync)
 
     def _load_sync(self) -> None:
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -64,7 +71,7 @@ class OmniVoiceTTS(TTSPort):
     async def load_voice_profile(self, lang: str, profile_path: str) -> None:
         """Load a cached voice profile for a language (async)."""
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.load_voice_profile_sync, lang, profile_path)
+        await loop.run_in_executor(self._executor, self.load_voice_profile_sync, lang, profile_path)
 
     def clone_voice_sync(self, lang: str, reference_audio: str) -> "VoiceClonePrompt":
         """Create a voice clone prompt from reference audio for a language."""
@@ -82,7 +89,7 @@ class OmniVoiceTTS(TTSPort):
         """Create a voice clone prompt from reference audio (async)."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, self.clone_voice_sync, lang, reference_audio
+            self._executor, self.clone_voice_sync, lang, reference_audio
         )
 
     def set_language(self, lang: str) -> None:
@@ -99,6 +106,20 @@ class OmniVoiceTTS(TTSPort):
     def available_languages(self) -> list[str]:
         """Languages that have loaded voice profiles."""
         return list(self._voice_prompts.keys())
+
+    async def warmup(self) -> None:
+        """Run a throwaway synthesis to trigger torch.compile CUDA graph capture."""
+        if self._model is None:
+            return
+        if not self._voice_prompts:
+            logger.warning("TTS warmup skipped: no voice profile loaded")
+            return
+        lang = self._active_language
+        prompt = self._voice_prompts.get(lang) or next(iter(self._voice_prompts.values()))
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            self._executor, self._synthesize_sync, "Warmup.", {}, prompt, lang
+        )
 
     async def synthesize(self, text: str, voice_params: dict | None = None) -> np.ndarray:
         """Synthesize text to audio using the active language's voice profile."""
@@ -119,7 +140,7 @@ class OmniVoiceTTS(TTSPort):
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, self._synthesize_sync, text, voice_params or {}, prompt, lang
+            self._executor, self._synthesize_sync, text, voice_params or {}, prompt, lang
         )
 
     def _synthesize_sync(self, text: str, voice_params: dict,
@@ -163,6 +184,7 @@ class OmniVoiceTTS(TTSPort):
         return result
 
     async def shutdown(self) -> None:
+        self._executor.shutdown(wait=False)
         if self._model is not None:
             del self._model
             self._model = None

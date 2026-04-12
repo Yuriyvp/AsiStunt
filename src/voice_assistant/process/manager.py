@@ -281,11 +281,97 @@ class ProcessManager:
             logger.exception("Startup failed: %s", e)
             self._ipc.emit_error("system", f"Startup failed: {e}")
 
+        # Warmup phase — prime all models before accepting user input
+        await self._run_warmups()
+
         # Determine pipeline mode based on what started
         self._mode = self._determine_mode(llm_ok, tts_ok)
         logger.info("Startup complete: mode=%s (llm=%s, tts=%s)", self._mode.value, llm_ok, tts_ok)
         self._ipc.emit_signal("process_state_change", component="system", state=self._mode.value)
         return self._mode
+
+    async def _run_warmups(self) -> None:
+        """Run warmup inference on all loaded models. Failures are non-fatal."""
+        self._ipc.emit_signal("process_state_change", component="system", state="warming")
+
+        async def _warmup_component(name: str, coro_or_callable):
+            self._set_component_state(name, "warming")
+            t0 = time.monotonic()
+            try:
+                if asyncio.iscoroutinefunction(coro_or_callable):
+                    await coro_or_callable()
+                elif callable(coro_or_callable):
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, coro_or_callable)
+                elapsed = time.monotonic() - t0
+                logger.info("Warmup %s completed in %.2fs", name, elapsed)
+            except Exception:
+                elapsed = time.monotonic() - t0
+                logger.warning("Warmup %s failed after %.2fs (non-fatal)", name, elapsed, exc_info=True)
+            finally:
+                self._set_component_state(name, "ready")
+
+        # GPU warmups sequential, CPU warmups concurrent with GPU
+        gpu_warmups = []
+        cpu_warmups = []
+
+        if self._llm_process and self._llm_process.is_running:
+            from voice_assistant.adapters.llamacpp_llm import LlamaCppLLM
+            llm_client = LlamaCppLLM(f"http://127.0.0.1:{self._llm_process.port}")
+
+            async def _llm_warmup():
+                try:
+                    await llm_client.warmup()
+                finally:
+                    await llm_client.shutdown()
+
+            gpu_warmups.append(("llm", _llm_warmup))
+        elif self._llm_process:
+            logger.warning("LLM warmup skipped: process not running (port conflict?)")
+
+        if self._tts is not None:
+            gpu_warmups.append(("tts", self._tts.warmup))
+
+        if self._vad is not None:
+            cpu_warmups.append(("vad", self._vad.warmup))
+
+        if self._asr is not None:
+            cpu_warmups.append(("asr", self._asr.warmup))
+
+        async def _gpu_sequence():
+            for name, fn in gpu_warmups:
+                await _warmup_component(name, fn)
+
+        tasks = [_gpu_sequence()]
+        for name, fn in cpu_warmups:
+            tasks.append(_warmup_component(name, fn))
+
+        await asyncio.gather(*tasks)
+
+    async def _warmup_single(self, component: str) -> None:
+        """Warmup a single component after restart."""
+        self._set_component_state(component, "warming")
+        t0 = time.monotonic()
+        try:
+            if component == "llm" and self._llm_process and self._llm_process.is_running:
+                from voice_assistant.adapters.llamacpp_llm import LlamaCppLLM
+                llm = LlamaCppLLM(f"http://127.0.0.1:{self._llm_process.port}")
+                try:
+                    await llm.warmup()
+                finally:
+                    await llm.shutdown()
+            elif component == "tts" and self._tts is not None:
+                await self._tts.warmup()
+            elif component == "asr" and self._asr is not None:
+                await self._asr.warmup()
+            elif component == "vad" and self._vad is not None:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._vad.warmup)
+            logger.info("Warmup %s completed in %.2fs", component, time.monotonic() - t0)
+        except Exception:
+            logger.warning("Warmup %s failed (non-fatal)", component, exc_info=True)
+        finally:
+            self._set_component_state(component, "ready")
 
     def _determine_mode(self, llm_ok: bool, tts_ok: bool) -> PipelineMode:
         """Determine pipeline mode from component availability."""
@@ -445,6 +531,12 @@ class ProcessManager:
             else:
                 self._set_component_state(component, "error")
                 return "error"
+
+            # Warmup the just-started component
+            try:
+                await self._warmup_single(component)
+            except Exception:
+                logger.warning("Warmup failed for %s after restart (non-fatal)", component, exc_info=True)
 
             self._set_component_state(component, "ready")
             self._recalculate_mode()

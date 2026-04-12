@@ -110,6 +110,16 @@ class FakeAudioInput:
         except asyncio.CancelledError:
             raise
 
+    def flush_queue(self) -> int:
+        count = 0
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                count += 1
+            except asyncio.QueueEmpty:
+                break
+        return count
+
     async def read_chunk(self):
         try:
             return self._queue.get_nowait()
@@ -334,7 +344,8 @@ async def main():
             # Wait for turn to complete
             try:
                 deadline = time.monotonic() + 120
-                saw_proc = False
+                # For barge-in turns, the turn may already be complete after the delay
+                saw_proc = bool(barge_delay)
                 while time.monotonic() < deadline:
                     st = orch.state
                     if st in (PipelineState.PROCESSING, PipelineState.SPEAKING):

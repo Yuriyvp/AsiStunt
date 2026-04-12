@@ -194,6 +194,35 @@ class Orchestrator:
         """Detect language of typed text using multi-strategy detection."""
         return detect_language(text, self._supported_languages)
 
+    def _reset_audio_state(self, reason: str) -> None:
+        """Centralized audio state cleanup — single place for all buffer resets.
+
+        Called from barge-in AND stale playback stop. Resets:
+        - Playback (fade + clear playlist)
+        - VAD stored segments (without resetting detection — user may be speaking)
+        - AudioInput chunk queue (stale chunks from sounddevice callback)
+        - Orchestrator flags (_pending_speech, _barge_in_speech_start, _generation_cancelled)
+        """
+        # 1. Stop output
+        self._playback.fade_out(15)
+        dropped = self._playlist.drop_future()
+        self._playlist.clear()
+
+        # 2. Clear stale VAD segments (keep detection state — user may be speaking)
+        stale = self._vad.clear_segments()
+
+        # 3. Flush queued audio chunks from mic callback
+        flushed = self._audio.flush_queue()
+
+        # 4. Clear orchestrator flags
+        self._pending_speech = None
+        self._barge_in_speech_start = None
+        self._generation_cancelled = True
+
+        logger.info("%s AUDIO RESET (%s): dropped=%d playlist_chunks, "
+                    "stale_vad=%d segments, flushed=%d audio_chunks",
+                    self._ts(), reason, len(dropped), stale, flushed)
+
     def _stop_stale_playback(self) -> None:
         """Stop any audio still playing from a previous turn.
 
@@ -202,11 +231,8 @@ class Orchestrator:
         starts we must stop it so old and new audio don't overlap.
         """
         if not self._playlist.is_empty:
-            remaining = self._playlist.text_remaining()
-            logger.info("%s STALE PLAYBACK — clearing playlist (remaining: '%.60s')",
-                        self._ts(), remaining)
-            self._playback.fade_out(15)
-            self._playlist.clear()
+            logger.info("%s STALE PLAYBACK — clearing", self._ts())
+            self._reset_audio_state("stale-playback")
 
     async def _vad_loop(self) -> None:
         """Continuous VAD processing loop."""
@@ -328,39 +354,29 @@ class Orchestrator:
                 await asyncio.sleep(0.1)
 
     async def _execute_barge_in(self) -> None:
-        """Execute barge-in: stop audio immediately, cancel pipeline, clean up."""
+        """Execute barge-in: stop audio, cancel pipeline, reset all buffers."""
         prev_state = self._state.state
         logger.info("%s ═══ BARGE-IN START (from %s) ═══", self._ts(), prev_state.value)
 
-        # 1. Stop audio output immediately (non-blocking, runs in callback thread)
-        self._playback.fade_out(15)
+        # 1. Capture played text BEFORE clearing playlist
         played = self._playlist.text_played()
-        remaining = self._playlist.text_remaining()
-        dropped = self._playlist.drop_future()
-        logger.info("%s  Playback fade-out, dropped %d future chunks. played='%.60s' remaining='%.60s'",
-                    self._ts(), len(dropped), played, remaining)
 
-        # 2. Cancel in-flight LLM/TTS task first (don't await LLM cancel — fire and forget)
+        # 2. Cancel in-flight LLM/TTS task
         had_task = self._processing_task is not None
         if self._processing_task:
             self._processing_task.cancel()
             self._processing_task = None
-        logger.info("%s  Processing task cancelled=%s", self._ts(), had_task)
-
-        # 3. Clear playlist and cancel LLM connection concurrently
-        self._playlist.clear()
-        # LLM cancel is fast (closes HTTP socket) but don't block barge-in on it
         asyncio.ensure_future(self._llm.cancel())
-        logger.info("%s  Playlist cleared, LLM cancel fired", self._ts())
+        logger.info("%s  Processing task cancelled=%s, LLM cancel fired", self._ts(), had_task)
+
+        # 3. Centralized audio state reset (playlist, VAD segments, audio queue, flags)
+        self._reset_audio_state("barge-in")
 
         # 4. Update last assistant turn as interrupted
         if self._dialogue and self._dialogue[-1].role == "assistant":
             self._dialogue[-1].interrupted = True
             self._dialogue[-1].partial = played
 
-        self._barge_in_speech_start = None
-        self._generation_cancelled = True
-        self._pending_speech = None  # barge-in resets everything
         self._state.transition(PipelineState.INTERRUPTED)
         logger.info("%s ═══ BARGE-IN DONE → INTERRUPTED ═══", self._ts())
 

@@ -108,6 +108,14 @@ class LlamaCppLLM(LLMPort):
             self._current_response = None
             logger.debug("LLM generation cancelled (connection closed)")
 
+    async def warmup(self) -> None:
+        """Small completion to prime KV cache and CUDA kernels."""
+        async for _ in self.stream(
+            [{"role": "user", "content": "Hi"}],
+            sampling={"max_tokens": 1},
+        ):
+            pass
+
     async def health_check(self) -> bool:
         try:
             session = await self._ensure_session()

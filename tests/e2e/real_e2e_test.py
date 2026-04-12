@@ -146,6 +146,17 @@ class FakeAudioInput:
         except asyncio.CancelledError:
             raise
 
+    def flush_queue(self) -> int:
+        """Discard all queued audio chunks."""
+        count = 0
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                count += 1
+            except asyncio.QueueEmpty:
+                break
+        return count
+
     async def read_chunk(self) -> np.ndarray:
         """Called by orchestrator's VAD loop."""
         try:

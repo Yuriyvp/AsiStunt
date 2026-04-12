@@ -84,5 +84,10 @@ class ParakeetASR(ASRPort):
             "duration_s": duration,
         }
 
+    async def warmup(self) -> None:
+        """Run a dummy transcription to trigger ONNX Runtime optimization."""
+        dummy_audio = np.zeros(16000, dtype=np.float32)
+        await self.transcribe(dummy_audio)
+
     async def shutdown(self) -> None:
         logger.info("Parakeet ASR shut down")
