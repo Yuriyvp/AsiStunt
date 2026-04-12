@@ -35,7 +35,7 @@ Microphone → RNNoise → Silero VAD → Parakeet ASR → llama.cpp LLM
 |---|---|---|
 | Voice Activity Detection | Silero VAD v5 | CPU (sherpa-onnx) |
 | Speech Recognition | Parakeet TDT 0.6B v3 INT8 | CPU (sherpa-onnx) |
-| Language Model | Qwen3.5 35B-A3B or Gemma 4 26B-A4B (IQ4_XS) | GPU (llama.cpp subprocess) |
+| Language Model | Gemma 4 26B-A4B (IQ4_XS, 13GB) | GPU (llama.cpp subprocess) |
 | Text-to-Speech | OmniVoice (k2-fsa) | GPU (in-process, float16, torch.compile) |
 | Audio Denoising | RNNoise | CPU (librnnoise.so via ctypes) |
 
@@ -82,7 +82,7 @@ Place models in the `models/` directory:
 
 ```
 models/
-├── Qwen3.5-35B-A3B-*.gguf                 # LLM (any GGUF model)
+├── gemma-4-26B-A4B-it-UD-IQ4_XS.gguf     # LLM (any GGUF model works)
 ├── silero_vad.onnx                         # VAD model
 └── sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/  # ASR model
     ├── encoder.int8.onnx
@@ -177,7 +177,7 @@ mood:
 
 ```yaml
 llm:
-  model: models/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf
+  model: models/gemma-4-26B-A4B-it-UD-IQ4_XS.gguf
   ctx_size: 8192
   flash_attn: true
   gpu_layers: 999
@@ -204,24 +204,22 @@ Voice profiles are stored as `voice_{lang}.voiceprofile` — independent of pers
 ```bash
 source .venv/bin/activate
 
-# Run all tests (273 tests)
-pytest tests/ -v
-
-# Unit tests only
+# Unit tests (204 tests)
 pytest tests/unit/ -v
 
-# Integration tests only
+# Integration tests (198 tests, mock-based)
 pytest tests/integration/ -v
 
-# Stress test (requires running models, ~5 min)
-python tests/stress/stress_test.py 2>/tmp/stress.log
+# Real E2E test (requires running models, ~4 min)
+# Feeds 20 WAV samples through full pipeline: VAD → ASR → LLM → TTS
+python tests/e2e/real_e2e_test.py 2>&1 | tee /tmp/va_e2e.log
 
-# Specific test suites
-pytest tests/integration/test_barge_in.py -v
-pytest tests/integration/test_voice_pipeline.py -v
-pytest tests/integration/test_degraded_modes.py -v
-pytest tests/integration/test_language_switching.py -v
-pytest tests/integration/test_voice_clone.py -v
+# Voice stress test (10 conversations, 27 turns, ~5 min)
+python tests/e2e/stress_voice.py 2>&1 | tee /tmp/va_stress.log
+
+# Generate test voice samples (requires edge-tts)
+pip install edge-tts
+python tests/e2e/generate_samples.py
 ```
 
 ### Frontend build check
@@ -306,8 +304,9 @@ AsiStunt/
 │   │   └── src/lib.rs           # Sidecar spawn, shortcuts, tray
 │   └── package.json
 ├── tests/
-│   ├── unit/                    # 180 unit tests
-│   └── integration/             # 58 integration tests
+│   ├── unit/                    # 204 unit tests
+│   ├── integration/             # 198 integration tests (mock-based)
+│   └── e2e/                     # Real E2E tests (WAV → VAD → ASR → LLM → TTS)
 ├── soul/
 │   └── schema.json              # SOUL YAML validation schema
 ├── models/                      # AI models (gitignored)
