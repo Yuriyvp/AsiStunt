@@ -11,7 +11,7 @@ Private, real-time, conversational AI that runs entirely on your hardware. No cl
 - **Real-time voice conversation** — speak naturally, get spoken responses
 - **Barge-in support** — interrupt the assistant mid-sentence, it stops and listens
 - **Multi-language** — Croatian, English, German, and more (auto-detected per turn)
-- **Mood-aware responses** — voice tone adapts to conversation context (warm, playful, calm, concerned)
+- **Mood-aware responses** — voice tone adapts with real OmniVoice tags ([laughter], [sigh], [sniff]) and speed modulation across 5 moods (calm, warm, playful, concerned, tender)
 - **Voice cloning** — clone any voice from a reference audio sample
 - **SOUL personality system** — YAML-based persona configuration (backstory, personality, voice style)
 - **Rolling memory** — L2 summaries keep long conversations coherent within token budgets
@@ -36,7 +36,7 @@ Microphone → RNNoise → Silero VAD → Parakeet ASR → llama.cpp LLM
 | Voice Activity Detection | Silero VAD v5 | CPU (sherpa-onnx) |
 | Speech Recognition | Parakeet TDT 0.6B v3 INT8 | CPU (sherpa-onnx) |
 | Language Model | Qwen3.5 35B-A3B or Gemma 4 26B-A4B (IQ4_XS) | GPU (llama.cpp subprocess) |
-| Text-to-Speech | OmniVoice (k2-fsa) | GPU (in-process, float16) |
+| Text-to-Speech | OmniVoice (k2-fsa) | GPU (in-process, float16, torch.compile) |
 | Audio Denoising | RNNoise | CPU (librnnoise.so via ctypes) |
 
 **State Machine:** `IDLE → LISTENING → PROCESSING → SPEAKING → IDLE` (with `INTERRUPTED` for barge-in)
@@ -204,7 +204,7 @@ Voice profiles are stored as `voice_{lang}.voiceprofile` — independent of pers
 ```bash
 source .venv/bin/activate
 
-# Run all tests (266 tests)
+# Run all tests (273 tests)
 pytest tests/ -v
 
 # Unit tests only
@@ -306,7 +306,7 @@ AsiStunt/
 │   │   └── src/lib.rs           # Sidecar spawn, shortcuts, tray
 │   └── package.json
 ├── tests/
-│   ├── unit/                    # 173 unit tests
+│   ├── unit/                    # 180 unit tests
 │   └── integration/             # 58 integration tests
 ├── soul/
 │   └── schema.json              # SOUL YAML validation schema
