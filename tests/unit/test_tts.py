@@ -48,10 +48,15 @@ class TestLoadVoiceClonePrompt:
 class MockOmniVoice:
     """Mock OmniVoice model for testing without GPU/model download."""
 
+    def __init__(self):
+        self.last_kwargs = {}
+
     def eval(self):
         return self
 
-    def generate(self, text, speed=1.0, voice_clone_prompt=None, instruct=None, language=None):
+    def generate(self, **kwargs):
+        self.last_kwargs = kwargs
+        text = kwargs.get("text", "")
         n_samples = int(len(text) * 0.06 * 24000)
         return [torch.randn(1, max(n_samples, 100))]
 
@@ -115,6 +120,57 @@ class TestOmniVoiceTTS:
         await tts.shutdown()
         assert tts._model is None
         assert tts._voice_prompts == {}
+
+    @pytest.mark.asyncio
+    async def test_synthesize_with_laughter_tag(self, tts):
+        tts._model = MockOmniVoice()
+        from omnivoice.models.omnivoice import VoiceClonePrompt
+        prompt = VoiceClonePrompt(
+            ref_audio_tokens=torch.randn(1, 50), ref_text="ref", ref_rms=0.05
+        )
+        tts._voice_prompts["en"] = prompt
+        tts._active_language = "en"
+        await tts.synthesize("Sure thing!", {"tags": ["[laughter]"], "speed": 1.0})
+        # [laughter] gets a space before it
+        assert tts._model.last_kwargs["text"] == "Sure thing! [laughter]"
+
+    @pytest.mark.asyncio
+    async def test_synthesize_with_sigh_tag(self, tts):
+        tts._model = MockOmniVoice()
+        from omnivoice.models.omnivoice import VoiceClonePrompt
+        prompt = VoiceClonePrompt(
+            ref_audio_tokens=torch.randn(1, 50), ref_text="ref", ref_rms=0.05
+        )
+        tts._voice_prompts["en"] = prompt
+        tts._active_language = "en"
+        await tts.synthesize("I see.", {"tags": ["[sigh]"], "speed": 1.0})
+        # [sigh] must have NO space before it
+        assert tts._model.last_kwargs["text"] == "I see.[sigh]"
+
+    @pytest.mark.asyncio
+    async def test_instruct_not_passed_by_default(self, tts):
+        tts._model = MockOmniVoice()
+        from omnivoice.models.omnivoice import VoiceClonePrompt
+        prompt = VoiceClonePrompt(
+            ref_audio_tokens=torch.randn(1, 50), ref_text="ref", ref_rms=0.05
+        )
+        tts._voice_prompts["en"] = prompt
+        tts._active_language = "en"
+        await tts.synthesize("Hello!", {"instruct": "female, soft", "speed": 1.0})
+        assert "instruct" not in tts._model.last_kwargs
+
+    @pytest.mark.asyncio
+    async def test_instruct_passed_when_enabled(self):
+        tts = OmniVoiceTTS(use_instruct=True)
+        tts._model = MockOmniVoice()
+        from omnivoice.models.omnivoice import VoiceClonePrompt
+        prompt = VoiceClonePrompt(
+            ref_audio_tokens=torch.randn(1, 50), ref_text="ref", ref_rms=0.05
+        )
+        tts._voice_prompts["en"] = prompt
+        tts._active_language = "en"
+        await tts.synthesize("Hello!", {"instruct": "female, soft", "speed": 1.0})
+        assert tts._model.last_kwargs["instruct"] == "female, soft"
 
 
 def _mock_import(name, *args, **kwargs):

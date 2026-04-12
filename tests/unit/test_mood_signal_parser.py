@@ -132,15 +132,38 @@ class TestMoodState:
         m = MoodState()
         params = m.get_voice_params()
         assert params["speed"] == 1.0
-        assert params["energy"] == 1.0
+        assert params["tags"] == []
+        assert params["instruct"] == ""
+        assert "pitch_shift" not in params
+        assert "energy" not in params
 
     def test_voice_params_playful(self):
         m = MoodState()
         m.update("happy", 0.9)
         params = m.get_voice_params()
         assert params["speed"] > 1.0
-        assert params["energy"] > 1.0
-        assert "<laugh>" in params["tags"]
+        assert "[laughter]" in params["tags"]
+        assert params["instruct"] != ""
+
+    def test_voice_params_tender(self):
+        m = MoodState()
+        m.update("tender", 0.8)
+        params = m.get_voice_params()
+        assert params["speed"] < 1.0
+        assert "[sniff]" in params["tags"]
+        assert "soft" in params["instruct"]
+
+    def test_voice_params_concerned_has_sigh(self):
+        m = MoodState()
+        m.update("sad", 0.9)
+        params = m.get_voice_params()
+        assert "[sigh]" in params["tags"]
+
+    def test_low_intensity_suppresses_tags(self):
+        m = MoodState()
+        m.update("happy", 0.3)
+        params = m.get_voice_params()
+        assert params["tags"] == []
 
     def test_intensity_clamped(self):
         m = MoodState()

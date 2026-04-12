@@ -217,7 +217,7 @@ class Orchestrator:
 
                 if event is None:
                     # Check for barge-in during SPEAKING or PROCESSING
-                    if (self._state.state in (PipelineState.SPEAKING, PipelineState.PROCESSING)
+                    if (self._state.state == PipelineState.SPEAKING
                             and self._vad.is_speech
                             and self._barge_in_speech_start is not None):
                         elapsed = (time.monotonic() - self._barge_in_speech_start) * 1000
@@ -234,11 +234,15 @@ class Orchestrator:
                         # Stop any leftover playback from previous turn before listening
                         self._stop_stale_playback()
                         self._state.transition(PipelineState.LISTENING)
-                    elif self._state.state in (PipelineState.SPEAKING, PipelineState.PROCESSING):
-                        # User speaks while assistant is generating or speaking → barge-in gate
+                    elif self._state.state == PipelineState.SPEAKING:
+                        # User speaks while assistant is talking → barge-in gate
                         self._barge_in_speech_start = time.monotonic()
-                        logger.info("%s Barge-in gate started (state=%s)",
-                                    self._ts(), self._state.state.value)
+                        logger.info("%s Barge-in gate started (state=SPEAKING)", self._ts())
+                    elif self._state.state == PipelineState.PROCESSING:
+                        # User continues speaking while first segment is being processed.
+                        # Don't barge-in — let speech accumulate and queue at speech_end.
+                        logger.info("%s Speech during PROCESSING — will queue at speech_end",
+                                    self._ts())
 
                 elif event.type == "speech_end":
                     logger.info("%s VAD speech_end (%.0fms) — state=%s",
@@ -289,9 +293,20 @@ class Orchestrator:
                             self._state.transition(PipelineState.IDLE)
 
                     elif self._state.state == PipelineState.SPEAKING:
-                        # Speech too short to trigger barge-in (<150ms) — ignore
-                        logger.info("%s Speech ended during SPEAKING (%.0fms, below gate) — ignored",
-                                    self._ts(), event.duration_ms)
+                        # Speech during SPEAKING — either short noise (sub-gate barge-in)
+                        # or continuation that started during PROCESSING. Queue as pending
+                        # so it's processed after the current turn finishes.
+                        speech_audio = self._vad.drain_speech_samples()
+                        if speech_audio is not None:
+                            if self._pending_speech is not None:
+                                self._pending_speech = np.concatenate([self._pending_speech, speech_audio])
+                            else:
+                                self._pending_speech = speech_audio
+                            logger.info("%s Speech ended during SPEAKING (%.0fms) — queued as pending (%.1fs)",
+                                        self._ts(), event.duration_ms, len(self._pending_speech) / 16000)
+                        else:
+                            logger.info("%s Speech ended during SPEAKING (%.0fms) — no audio drained",
+                                        self._ts(), event.duration_ms)
 
                     elif self._state.state == PipelineState.IDLE:
                         # Spurious speech_end in IDLE — drain to keep buffer clean
@@ -578,6 +593,10 @@ class Orchestrator:
             return
         voice_params = self._mood.get_voice_params()
         voice_params["language"] = lang
+        tags = voice_params.get("tags", [])
+        if tags:
+            logger.info("%s TTS mood=%s tags=%s for: '%.50s'",
+                        self._ts(), self._mood.mood, tags, text)
         t0 = time.monotonic()
         try:
             audio = await asyncio.wait_for(
@@ -586,9 +605,9 @@ class Orchestrator:
             )
             elapsed = time.monotonic() - t0
             duration = len(audio) / 24000
-            logger.info("%s TTS [%s] %.2fs synth → %.2fs audio (RTF=%.2f): '%.50s'",
+            logger.info("%s TTS [%s] %.2fs synth → %.2fs audio (RTF=%.2f) mood=%s: '%.50s'",
                         self._ts(), lang, elapsed, duration,
-                        elapsed / duration if duration else 0, text)
+                        elapsed / duration if duration else 0, self._mood.mood, text)
             if self._generation_cancelled:
                 logger.info("%s TTS result discarded (cancelled during synth): '%.40s'", self._ts(), text)
                 return

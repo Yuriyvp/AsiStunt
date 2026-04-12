@@ -59,7 +59,7 @@ class ContextBuilder:
         system_parts.append(
             "\n\nBefore each response, emit exactly one mood signal tag on its own line:\n"
             "<mood_signal>user_tone=TONE, intensity=N.N</mood_signal>\n\n"
-            "TONE is one of: happy, sad, angry, neutral, anxious, affectionate, playful, frustrated\n"
+            "TONE is one of: happy, sad, angry, neutral, anxious, affectionate, playful, frustrated, tender\n"
             "intensity is 0.0 to 1.0\n\n"
             "Then write your response normally. The mood tag will be stripped and not shown."
         )

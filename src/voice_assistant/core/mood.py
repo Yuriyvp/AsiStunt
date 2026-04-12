@@ -1,8 +1,13 @@
-"""Mood state management.
+"""Mood state management — maps moods to real OmniVoice TTS parameters.
 
-Moods: calm, warm, playful, concerned.
+Moods: calm, warm, playful, concerned, tender.
 The LLM emits <mood_signal> tags, parsed by MoodSignalParser.
 Mood decays toward default each turn (intensity *= 0.85).
+
+OmniVoice parameters used:
+  - speed: speaking rate factor (0.92–1.08 range)
+  - tags: inline non-verbal symbols ([laughter], [sigh], etc.)
+  - instruct: voice design descriptors (prepared, gated behind use_instruct flag)
 """
 import logging
 from dataclasses import dataclass
@@ -18,13 +23,15 @@ USER_TONE_TO_MOOD = {
     "affectionate": "warm",
     "playful": "playful",
     "frustrated": "concerned",
+    "tender": "tender",
 }
 
 MOOD_VOICE_MAP = {
-    "calm":      {"speed": 1.0, "pitch_shift": 0,  "energy": 0.8, "tags": []},
-    "warm":      {"speed": 1.0, "pitch_shift": 0,  "energy": 1.0, "tags": []},
-    "playful":   {"speed": 1.1, "pitch_shift": +1, "energy": 1.1, "tags": ["<laugh>"]},
-    "concerned": {"speed": 0.9, "pitch_shift": -1, "energy": 0.9, "tags": []},
+    "calm":      {"speed": 0.95, "tags": [],             "instruct": "calm, soft, steady pace"},
+    "warm":      {"speed": 1.0,  "tags": [],             "instruct": ""},
+    "playful":   {"speed": 1.08, "tags": ["[laughter]"], "instruct": "cheerful, lively"},
+    "concerned": {"speed": 0.92, "tags": ["[sigh]"],     "instruct": "gentle, caring"},
+    "tender":    {"speed": 0.95, "tags": ["[sniff]"],    "instruct": "soft, intimate, warm"},
 }
 
 
@@ -55,11 +62,10 @@ class MoodState:
     def get_voice_params(self) -> dict:
         """Get OmniVoice parameters for current mood, scaled by intensity."""
         base = MOOD_VOICE_MAP.get(self.mood, MOOD_VOICE_MAP["warm"])
-        neutral = MOOD_VOICE_MAP["warm"]
+        neutral_speed = MOOD_VOICE_MAP["warm"]["speed"]
         scale = self.intensity
         return {
-            "speed": neutral["speed"] + (base["speed"] - neutral["speed"]) * scale,
-            "pitch_shift": int(base["pitch_shift"] * scale),
-            "energy": neutral["energy"] + (base["energy"] - neutral["energy"]) * scale,
+            "speed": neutral_speed + (base["speed"] - neutral_speed) * scale,
             "tags": base["tags"] if scale > 0.5 else [],
+            "instruct": base["instruct"],
         }

@@ -1,7 +1,8 @@
-"""OmniVoice TTS adapter — in-process PyTorch inference, clone-only mode.
+"""OmniVoice TTS adapter — in-process PyTorch inference.
 
 Every language uses a VoiceClonePrompt created from a reference audio sample.
-No instruct/description mode — cloning is mandatory for consistent voice.
+Supports mood-driven inline tags ([laughter], [sigh], etc.) and optional
+instruct-based voice design (gated behind use_instruct flag).
 
 Output: 24 kHz f32 numpy arrays.
 """
@@ -23,13 +24,14 @@ class OmniVoiceTTS(TTSPort):
 
     SAMPLE_RATE = 24000
 
-    def __init__(self, model_name: str = "k2-fsa/OmniVoice"):
+    def __init__(self, model_name: str = "k2-fsa/OmniVoice", use_instruct: bool = False):
         self._model_name = model_name
         self._model = None
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # Per-language voice clone prompts: {"en": VoiceClonePrompt, "hr": ...}
         self._voice_prompts: dict = {}
         self._active_language: str = "en"
+        self._use_instruct = use_instruct
 
     async def load(self) -> None:
         """Load OmniVoice model (no voice profiles yet — load those separately)."""
@@ -46,7 +48,13 @@ class OmniVoiceTTS(TTSPort):
             self._model_name, device_map=str(self._device), dtype=torch.float16
         )
         self._model.eval()
-        logger.info("OmniVoice loaded on %s", self._device)
+
+        # torch.compile the LLM backbone for ~23% speedup on generation
+        if hasattr(self._model, "llm"):
+            self._model.llm = torch.compile(self._model.llm, mode="reduce-overhead")
+            logger.info("OmniVoice loaded on %s (torch.compile applied to LLM)", self._device)
+        else:
+            logger.info("OmniVoice loaded on %s", self._device)
 
     def load_voice_profile_sync(self, lang: str, profile_path: str) -> None:
         """Load a cached voice profile for a language."""
@@ -120,12 +128,28 @@ class OmniVoiceTTS(TTSPort):
         start = time.monotonic()
         speed = voice_params.get("speed", 1.0)
 
+        # Inject mood-driven inline tags into text.
+        # [laughter] works with a space; all other tags must be glued
+        # directly to the preceding word (no space) per OmniVoice docs.
+        tags = voice_params.get("tags", [])
+        if tags:
+            for tag in tags:
+                if tag == "[laughter]":
+                    text = f"{text} {tag}"
+                else:
+                    text = f"{text}{tag}"
+
         kwargs = {
             "text": text,
             "speed": speed,
             "voice_clone_prompt": prompt,
             "language": lang,
         }
+
+        instruct = voice_params.get("instruct", "")
+        if self._use_instruct and instruct:
+            kwargs["instruct"] = instruct
+            logger.debug("TTS instruct: %s", instruct)
 
         with torch.inference_mode():
             audio_list = self._model.generate(**kwargs)
