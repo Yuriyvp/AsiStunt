@@ -49,6 +49,7 @@ class Playlist:
     def __init__(self):
         self._chunks: list[AudioChunk] = []
         self._current_index: int = 0
+        self._played_text_acc: str = ""  # accumulated text from freed chunks
         self._lock = threading.Lock()
         self._done_flag = threading.Event()
         self._done_flag.set()  # empty playlist starts as "done"
@@ -74,12 +75,16 @@ class Playlist:
         with self._lock:
             self._chunks.clear()
             self._current_index = 0
+            self._played_text_acc = ""
             self._done_flag.set()
 
     def text_played(self) -> str:
         """Return concatenated text of all fully played chunks."""
         with self._lock:
-            return " ".join(c.text for c in self._chunks[:self._current_index] if c.text)
+            current = " ".join(c.text for c in self._chunks[:self._current_index] if c.text)
+            if self._played_text_acc and current:
+                return f"{self._played_text_acc} {current}"
+            return self._played_text_acc or current
 
     def text_remaining(self) -> str:
         """Return concatenated text of unplayed/partially-played chunks."""
@@ -128,6 +133,26 @@ class Playlist:
         """
         while not self._done_flag.is_set():
             await asyncio.sleep(0.02)
+
+    def free_played(self) -> None:
+        """Free played chunks to prevent RSS growth. Call from asyncio thread only.
+
+        Removes fully-played chunks from the list and adjusts the index.
+        Safe to call between turns — never from the sounddevice callback.
+        """
+        with self._lock:
+            if self._current_index == 0:
+                return
+            freed = self._chunks[:self._current_index]
+            text_parts = [c.text for c in freed if c.text]
+            if text_parts:
+                freed_text = " ".join(text_parts)
+                if self._played_text_acc:
+                    self._played_text_acc += " " + freed_text
+                else:
+                    self._played_text_acc = freed_text
+            del self._chunks[:self._current_index]
+            self._current_index = 0
 
     @property
     def is_empty(self) -> bool:

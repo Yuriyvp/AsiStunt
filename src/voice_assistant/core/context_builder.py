@@ -10,7 +10,7 @@ from voice_assistant.core.orchestrator import Turn
 from voice_assistant.memory.context_window import (
     DIALOGUE_BUDGET, GENERATION_HEADROOM, MIN_KEEP_TURNS,
     SINGLE_TURN_MAX, SINGLE_TURN_KEEP_HEAD, SINGLE_TURN_KEEP_TAIL,
-    SUMMARY_TRIGGER_TOKENS,
+    SUMMARY_TRIGGER_TOKENS, TOTAL_CONTEXT,
 )
 from voice_assistant.memory.rolling_summary import RollingSummary
 from voice_assistant.ports.llm import LLMPort
@@ -21,12 +21,13 @@ logger = logging.getLogger(__name__)
 class ContextBuilder:
     """Assembles the prompt for each LLM call, respecting token budgets."""
 
-    def __init__(self, llm: LLMPort, summary: RollingSummary):
+    def __init__(self, llm: LLMPort, summary: RollingSummary, ctx_size: int = TOTAL_CONTEXT):
         self._llm = llm
         self._summary = summary
+        self._ctx_size = ctx_size
         self._persona_card: str = ""
         self._persona_tokens: int = 0
-        self._turn_token_cache: dict[int, int] = {}  # id(turn) → token count
+        self._turn_token_cache: dict[str, int] = {}  # content hash → token count
 
     def set_persona(self, personality: str, backstory: str) -> None:
         """Set persona card text. Tokenize once, cache."""
@@ -66,7 +67,7 @@ class ContextBuilder:
 
         system_message = "\n".join(system_parts)
         system_tokens = await self._llm.tokenize(system_message)
-        available = 8192 - system_tokens - GENERATION_HEADROOM
+        available = self._ctx_size - system_tokens - GENERATION_HEADROOM
 
         # Fit dialogue turns
         fitted_turns = await self._fit_dialogue(dialogue, available)
@@ -82,27 +83,31 @@ class ContextBuilder:
         if not dialogue:
             return []
 
-        # Tokenize turns (cached)
+        # Tokenize turns (cached by content)
         for turn in dialogue:
-            tid = id(turn)
-            if tid not in self._turn_token_cache:
-                self._turn_token_cache[tid] = await self._llm.tokenize(turn.content)
+            key = turn.content[:200]  # first 200 chars as cache key
+            if key not in self._turn_token_cache:
+                self._turn_token_cache[key] = await self._llm.tokenize(turn.content)
 
         # Truncate very long single turns
         for turn in dialogue:
-            tid = id(turn)
-            if self._turn_token_cache[tid] > SINGLE_TURN_MAX:
-                mid_omit = self._turn_token_cache[tid] - SINGLE_TURN_KEEP_HEAD - SINGLE_TURN_KEEP_TAIL
+            key = turn.content[:200]
+            if self._turn_token_cache[key] > SINGLE_TURN_MAX:
+                tok_count = self._turn_token_cache[key]
+                mid_omit = tok_count - SINGLE_TURN_KEEP_HEAD - SINGLE_TURN_KEEP_TAIL
                 chars = len(turn.content)
-                head = turn.content[:int(chars * SINGLE_TURN_KEEP_HEAD / self._turn_token_cache[tid])]
-                tail = turn.content[-int(chars * SINGLE_TURN_KEEP_TAIL / self._turn_token_cache[tid]):]
-                turn.content = f"{head}\n[... middle truncated, ~{mid_omit} tokens omitted ...]\n{tail}"
-                self._turn_token_cache[tid] = SINGLE_TURN_KEEP_HEAD + SINGLE_TURN_KEEP_TAIL + 20
+                head_chars = int(chars * SINGLE_TURN_KEEP_HEAD / tok_count)
+                tail_chars = int(chars * SINGLE_TURN_KEEP_TAIL / tok_count)
+                head = turn.content[:head_chars]
+                tail = turn.content[-tail_chars:] if tail_chars > 0 else ""
+                turn.content = f"{head}\n[... ~{mid_omit} tokens omitted ...]\n{tail}"
+                new_key = turn.content[:200]
+                self._turn_token_cache[new_key] = SINGLE_TURN_KEEP_HEAD + SINGLE_TURN_KEEP_TAIL + 20
 
         # Evict oldest until we fit
         result = list(dialogue)
         while len(result) > MIN_KEEP_TURNS:
-            total = sum(self._turn_token_cache.get(id(t), 50) for t in result)
+            total = sum(self._turn_token_cache.get(t.content[:200], 50) for t in result)
             if total <= budget:
                 break
             result.pop(0)  # evict oldest
@@ -111,5 +116,5 @@ class ContextBuilder:
 
     def needs_summary_update(self, dialogue: list[Turn]) -> bool:
         """Check if dialogue tail has exceeded the summary trigger threshold."""
-        total = sum(self._turn_token_cache.get(id(t), 50) for t in dialogue)
+        total = sum(self._turn_token_cache.get(t.content[:200], 50) for t in dialogue)
         return total > SUMMARY_TRIGGER_TOKENS

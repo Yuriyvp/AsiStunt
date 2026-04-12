@@ -9,7 +9,6 @@ Output: 24 kHz f32 numpy arrays.
 import asyncio
 import logging
 import time
-from pathlib import Path
 
 import numpy as np
 import torch

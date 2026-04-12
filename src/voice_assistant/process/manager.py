@@ -94,14 +94,14 @@ class LlamaCppProcess:
         url = f"http://127.0.0.1:{self._port}/health"
         deadline = asyncio.get_event_loop().time() + HEALTH_TIMEOUT
 
-        while asyncio.get_event_loop().time() < deadline:
-            if self._process and self._process.poll() is not None:
-                stderr = self._process.stderr.read().decode() if self._process.stderr else ""
-                raise RuntimeError(
-                    f"llama.cpp server exited with code {self._process.returncode}: {stderr[:500]}"
-                )
-            try:
-                async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as session:
+            while asyncio.get_event_loop().time() < deadline:
+                if self._process and self._process.poll() is not None:
+                    stderr = self._process.stderr.read().decode() if self._process.stderr else ""
+                    raise RuntimeError(
+                        f"llama.cpp server exited with code {self._process.returncode}: {stderr[:500]}"
+                    )
+                try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -109,9 +109,9 @@ class LlamaCppProcess:
                                 logger.info("llama.cpp server healthy")
                                 return
                             logger.debug("Health status: %s (waiting for 'ok')", data.get("status"))
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
-                pass
-            await asyncio.sleep(HEALTH_POLL_INTERVAL)
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+                    pass
+                await asyncio.sleep(HEALTH_POLL_INTERVAL)
 
         raise TimeoutError(f"llama.cpp server not healthy after {HEALTH_TIMEOUT}s")
 
@@ -378,7 +378,7 @@ class ProcessManager:
 
         # Recalculate mode
         llm_ok = self._llm_process is not None and self._llm_process.is_running
-        tts_ok = self._mode in (PipelineMode.FULL, PipelineMode.TRANSCRIBE)
+        tts_ok = self._tts is not None
         if component == "tts":
             tts_ok = False
         if component == "llm":
@@ -482,7 +482,7 @@ class ProcessManager:
     def _recalculate_mode(self) -> None:
         """Recalculate and emit pipeline mode based on running components."""
         llm_ok = self._llm_process is not None and self._llm_process.is_running
-        tts_ok = self._mode in (PipelineMode.FULL, PipelineMode.TRANSCRIBE)
+        tts_ok = self._tts is not None
         self._mode = self._determine_mode(llm_ok, tts_ok)
         self._ipc.emit_signal("process_state_change", component="system", state=self._mode.value)
 

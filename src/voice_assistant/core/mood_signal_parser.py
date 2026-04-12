@@ -57,7 +57,10 @@ class MoodSignalParser:
             match = MOOD_PATTERN.search(self._buffer)
             if match:
                 user_tone = match.group(1)
-                intensity = float(match.group(2))
+                try:
+                    intensity = float(match.group(2))
+                except ValueError:
+                    intensity = 0.5
                 self._mood_emitted = True
                 logger.debug("Mood signal: tone=%s, intensity=%.2f", user_tone, intensity)
                 if self._on_mood:

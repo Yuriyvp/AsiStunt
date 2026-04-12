@@ -55,8 +55,10 @@ class SileroVAD:
         self._is_speech = False
         self._speech_start_time: float = 0.0
 
-        # Buffer for accumulating samples until we have a full window
-        self._buffer = np.empty(0, dtype=np.float32)
+        # Pre-allocated ring buffer for accumulating samples until we have a full window.
+        # Avoids np.concatenate() on every 30ms chunk (was allocating ~23 times/sec).
+        self._buffer = np.empty(480 + 512, dtype=np.float32)  # chunk + window
+        self._buf_len = 0
 
         # sherpa-onnx VAD initialization
         config = sherpa_onnx.VadModelConfig()
@@ -93,15 +95,21 @@ class SileroVAD:
         the sherpa-onnx VAD. Returns a VADEvent if a speech transition
         occurred during this chunk, else None.
         """
-        self._buffer = np.concatenate([self._buffer, chunk])
+        # Append chunk to pre-allocated buffer (no allocation)
+        n = len(chunk)
+        self._buffer[self._buf_len:self._buf_len + n] = chunk
+        self._buf_len += n
         last_event = None
 
         # Process all complete windows in the buffer
-        while len(self._buffer) >= self._window_size:
-            window = self._buffer[:self._window_size]
-            self._buffer = self._buffer[self._window_size:]
-
-            self._vad.accept_waveform(window)
+        while self._buf_len >= self._window_size:
+            # Feed window to VAD BEFORE shifting — window is a view into buffer
+            self._vad.accept_waveform(self._buffer[:self._window_size])
+            # Now shift remaining data to front
+            remaining = self._buf_len - self._window_size
+            if remaining > 0:
+                self._buffer[:remaining] = self._buffer[self._window_size:self._buf_len]
+            self._buf_len = remaining
 
             now_speech = self._vad.is_speech_detected()
 
@@ -156,7 +164,7 @@ class SileroVAD:
     def reset(self) -> None:
         """Reset VAD state (e.g., after barge-in)."""
         self._is_speech = False
-        self._buffer = np.empty(0, dtype=np.float32)
+        self._buf_len = 0
         self._vad.reset()
 
     def flush(self) -> None:

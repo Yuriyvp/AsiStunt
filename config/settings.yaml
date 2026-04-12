@@ -5,7 +5,7 @@ llm:
   ctx_size: 8192
   flash_attn: true
   gpu_layers: 999
-  model: models/Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf
+  model: models/gemma-4-26B-A4B-it-UD-IQ4_XS.gguf
   port: 8080
   sampling:
     min_p: 0.05

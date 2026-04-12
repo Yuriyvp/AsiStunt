@@ -188,7 +188,7 @@ async def _save_settings_yaml(settings):
         logger.error("Failed to save settings: %s", e)
 
 
-async def _clone_voice_for_lang(pm, soul, emitter, lang, reference_audio):
+async def _clone_voice_for_lang(pm, emitter, settings, lang, reference_audio):
     """Clone voice for a single language using the already-loaded TTS model."""
     try:
         from voice_assistant.core.voice_clone import get_profile_path
@@ -199,10 +199,8 @@ async def _clone_voice_for_lang(pm, soul, emitter, lang, reference_audio):
 
         emitter.emit_signal("voice_clone_progress", lang=lang, status="Cloning...")
 
-        # Clone using the loaded model (no need to unload/reload)
         prompt = await pm._tts.clone_voice(lang, reference_audio)
 
-        # Save profile to disk
         profile_path = get_profile_path(f"voice_{lang}")
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -214,7 +212,6 @@ async def _clone_voice_for_lang(pm, soul, emitter, lang, reference_audio):
             profile_path,
         )
 
-        # Update soul config
         for vl in settings.voice_languages:
             if vl.id == lang:
                 vl.reference_audio = reference_audio
@@ -289,6 +286,7 @@ async def main() -> None:
 
     # Wire up the orchestrator with all loaded components
     orch = None
+    llm = None
     if pm._llm_process and pm._tts and pm._asr and pm._vad:
         try:
             from voice_assistant.core.orchestrator import Orchestrator
@@ -571,7 +569,7 @@ async def main() -> None:
                 logger.info("Clone voice for '%s': %s", lang, ref_audio)
 
                 async def _clone_then_save():
-                    await _clone_voice_for_lang(pm, soul, emitter, lang, ref_audio)
+                    await _clone_voice_for_lang(pm, emitter, settings, lang, ref_audio)
                     await _save_settings_yaml(settings)
 
                 asyncio.ensure_future(_clone_then_save())
@@ -633,6 +631,8 @@ async def main() -> None:
         logger.info("Shutting down...")
         if orch:
             await orch.stop()
+        if llm:
+            await llm.shutdown()
         await pm.shutdown()
         vram.shutdown()
         await emitter.stop()

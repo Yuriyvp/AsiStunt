@@ -455,7 +455,10 @@ class Orchestrator:
             system_with_lang = (
                 f"{self._system_prompt}\n\n"
                 f"IMPORTANT: The user is currently speaking {lang_name}. "
-                f"You MUST respond in {lang_name}."
+                f"You MUST respond in {lang_name}. "
+                f"NEVER use markdown, asterisks, bullet points, numbered lists, "
+                f"bold, italic, headers, or any formatting. Plain text only — "
+                f"this is a spoken conversation."
             )
             messages = [
                 {"role": "system", "content": system_with_lang},
@@ -573,6 +576,7 @@ class Orchestrator:
             logger.info("%s ═══ TURN DONE: total=%.2fs LLM=%.2fs TTS_wait=%.2fs chunks=%d tokens=%d playlist_empty=%s ═══",
                         self._ts(), total, llm_elapsed, tts_wait, chunk_count, token_count,
                         self._playlist.is_empty)
+            self._playlist.free_played()
             self._state.transition(PipelineState.IDLE)
 
         except asyncio.CancelledError:

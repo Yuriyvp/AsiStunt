@@ -18,11 +18,15 @@ models/sherpa-onnx-*/
 # Compiled binaries
 bin/llama-server
 
-# Voice data (user-generated)
+# Voice data (user-generated, large audio files)
+ViceClone/
 voice_db/profiles/*.voiceprofile
 voice_db/profiles/*.cachekey
 voice_db/fillers/*.wav
 voice_db/fillers/*.mp3
+
+# E2E test generated audio samples
+tests/e2e/samples/*.wav
 
 # Session data
 data/sessions/
