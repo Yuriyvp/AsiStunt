@@ -1,5 +1,5 @@
 language:
-  default: ru
+  default: hr
 llm:
   batch_size: 512
   ctx_size: 8192

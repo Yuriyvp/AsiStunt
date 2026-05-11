@@ -27,6 +27,7 @@ from voice_assistant.ports.tts import TTSPort
 logger = logging.getLogger(__name__)
 
 BARGE_IN_GATE_MS = 150
+SPEECH_END_DELAY_S = 0.35
 LISTENING_TIMEOUT_S = 30
 TTS_CHUNK_TIMEOUT_S = 20
 TTS_WORKER_TIMEOUT_S = 60
@@ -96,6 +97,7 @@ class Orchestrator:
         self._barge_in_speech_start: float | None = None
         self._generation_cancelled: bool = False
         self._pending_speech: np.ndarray | None = None
+        self._speech_end_time: float | None = None  # debounce timer for speech end
 
     @property
     def state(self) -> PipelineState:
@@ -217,6 +219,7 @@ class Orchestrator:
         # 4. Clear orchestrator flags
         self._pending_speech = None
         self._barge_in_speech_start = None
+        self._speech_end_time = None
         self._generation_cancelled = True
 
         logger.info("%s AUDIO RESET (%s): dropped=%d playlist_chunks, "
@@ -251,9 +254,34 @@ class Orchestrator:
                             logger.info("%s BARGE-IN gate passed (%.0fms) in state %s",
                                         self._ts(), elapsed, self._state.state.value)
                             await self._execute_barge_in()
+
+                # Speech-end debounce: check if timer expired (non-blocking)
+                if (self._speech_end_time is not None
+                        and self._state.state == PipelineState.LISTENING
+                        and not self._vad.is_speech):
+                    elapsed = time.monotonic() - self._speech_end_time
+                    if elapsed >= SPEECH_END_DELAY_S:
+                        self._speech_end_time = None
+                        speech_audio = self._vad.drain_speech_samples()
+                        if speech_audio is not None:
+                            logger.info("%s Drained %.1fs speech audio → starting ASR (after %.1fs delay)",
+                                        self._ts(), len(speech_audio) / 16000, elapsed)
+                            self._state.transition(PipelineState.PROCESSING)
+                            self._processing_task = asyncio.create_task(
+                                self._process_voice_turn(speech_audio)
+                            )
+                        else:
+                            logger.info("%s No speech audio drained — returning to IDLE", self._ts())
+                            self._state.transition(PipelineState.IDLE)
+
+                if event is None:
                     continue
 
                 if event.type == "speech_start":
+                    # Cancel speech-end debounce — user is still speaking
+                    if self._speech_end_time is not None:
+                        logger.info("%s Speech resumed during debounce — cancelling timer", self._ts())
+                        self._speech_end_time = None
                     logger.info("%s VAD speech_start — state=%s playlist_empty=%s",
                                 self._ts(), self._state.state.value, self._playlist.is_empty)
                     if self._state.state == PipelineState.IDLE:
@@ -276,18 +304,10 @@ class Orchestrator:
                     self._barge_in_speech_start = None
 
                     if self._state.state == PipelineState.LISTENING:
-                        # Drain speech audio from VAD buffer and transcribe
-                        speech_audio = self._vad.drain_speech_samples()
-                        if speech_audio is not None:
-                            logger.info("%s Drained %.1fs speech audio → starting ASR",
-                                        self._ts(), len(speech_audio) / 16000)
-                            self._state.transition(PipelineState.PROCESSING)
-                            self._processing_task = asyncio.create_task(
-                                self._process_voice_turn(speech_audio)
-                            )
-                        else:
-                            logger.info("%s No speech audio drained — returning to IDLE", self._ts())
-                            self._state.transition(PipelineState.IDLE)
+                        # Start debounce timer — don't process yet, user may continue
+                        self._speech_end_time = time.monotonic()
+                        logger.info("%s Speech ended — debounce %.1fs started",
+                                    self._ts(), SPEECH_END_DELAY_S)
 
                     elif self._state.state == PipelineState.PROCESSING:
                         # User continued speaking while first segment is being processed.
