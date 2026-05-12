@@ -31,6 +31,8 @@ SPEECH_END_DELAY_S = 0.35
 LISTENING_TIMEOUT_S = 30
 TTS_CHUNK_TIMEOUT_S = 20
 TTS_WORKER_TIMEOUT_S = 60
+DIALOGUE_WINDOW = 100  # turns of history sent to LLM (fits Gemma 32K ctx)
+CALL_END_MARKER = "[CALL_END]"
 
 # Global monotonic start for absolute timestamps in logs
 _T0 = time.monotonic()
@@ -90,6 +92,10 @@ class Orchestrator:
 
         # Callback for chunk-level events (wired to IPC in main.py)
         self._on_chunk_synthesized: callable | None = None
+        # Callback for end-of-call event (wired to IPC in main.py)
+        self._on_call_ended: callable | None = None
+        # Guard so _end_call only runs once per call
+        self._call_ended: bool = False
 
         # Task handles for cancellation
         self._vad_task: asyncio.Task | None = None
@@ -147,6 +153,105 @@ class Orchestrator:
                 pass
         await self._audio.stop()
         await self._playback.stop()
+
+    async def _end_call(self, reason: str) -> None:
+        """End the current call: mute mic, generate Croatian summary, write to file, notify UI.
+
+        reason: "model" (Eva emitted [CALL_END]) or "manual" (user pressed End Call button).
+        Safe to call multiple times — guarded by self._call_ended.
+        """
+        if self._call_ended:
+            logger.info("%s _end_call already ran for this call, skipping", self._ts())
+            return
+        self._call_ended = True
+
+        logger.info("%s ─── END CALL (reason=%s) ───", self._ts(), reason)
+
+        # 1. Mute mic immediately so a stray utterance can't reopen the call
+        self._audio.set_muted(True)
+        self._state.set_mode(PipelineMode.DISABLED)
+        # Clear any in-flight VAD state so the next call starts fresh
+        self._vad.reset()
+        self._pending_speech = None
+        self._speech_end_time = None
+
+        # 2. Build Croatian summary via one-shot LLM call
+        summary_path: str | None = None
+        try:
+            summary = await self._generate_croatian_summary()
+            summary_path = self._write_summary_file(summary, reason)
+            logger.info("%s Call summary written: %s", self._ts(), summary_path)
+        except Exception:
+            logger.exception("%s Failed to generate/write call summary", self._ts())
+
+        # 3. Notify UI
+        if self._on_call_ended:
+            try:
+                self._on_call_ended(reason=reason, summary_path=summary_path)
+            except Exception:
+                logger.exception("%s _on_call_ended callback raised", self._ts())
+
+    async def _generate_croatian_summary(self) -> str:
+        """One-shot LLM call to summarize the whole dialogue in Croatian."""
+        transcript = "\n".join(
+            f"{t.role.upper()}: {t.content}" for t in self._dialogue if t.content
+        )
+        system = (
+            "You are a call-summary writer for Dogma Nekretnine. "
+            "Write the summary in CROATIAN (hrvatski) ONLY, regardless of the call's language. "
+            "Plain text, no markdown. Maximum 150 words. "
+            "Cover: pozivateljevo ime, broj telefona, jezik za povratni poziv, "
+            "što tražite (lokacija/tip/budžet/namjena), rok, te bilo što važno "
+            "za Lidu Orlić ili kolegu prije povratnog poziva."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Razgovor:\n{transcript}\n\nSažetak na hrvatskom:"},
+        ]
+        chunks: list[str] = []
+        async for token in self._llm.stream(messages, thinking=False):
+            chunks.append(token)
+        return "".join(chunks).strip()
+
+    def _write_summary_file(self, summary: str, reason: str) -> str:
+        """Write summary + raw transcript to data/summaries/call_<timestamp>.txt."""
+        from datetime import datetime
+        from pathlib import Path
+        import os
+
+        env_root = os.environ.get("VOICE_ASSISTANT_ROOT")
+        base = Path(env_root) if env_root else Path(__file__).resolve().parents[3]
+        folder = base / "data" / "summaries"
+        folder.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = folder / f"call_{ts}.txt"
+
+        transcript = "\n".join(
+            f"{t.role.upper()} [{t.source}]: {t.content}"
+            for t in self._dialogue if t.content
+        )
+        body = (
+            f"=== AsiStunt / Dogma Nekretnine — call summary ===\n"
+            f"Timestamp: {ts}\n"
+            f"End reason: {reason}\n"
+            f"Turns: {len(self._dialogue)}\n\n"
+            f"--- Sažetak (hrvatski) ---\n{summary}\n\n"
+            f"--- Cijeli transkript ---\n{transcript}\n"
+        )
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def start_new_call(self) -> None:
+        """Reset for a fresh call: unmute mic, clear dialogue, re-enable pipeline."""
+        logger.info("%s ─── START NEW CALL ───", self._ts())
+        self._dialogue.clear()
+        self._call_ended = False
+        self._mood.decay()
+        self._vad.reset()
+        self._pending_speech = None
+        self._speech_end_time = None
+        self._audio.set_muted(False)
+        self._state.set_mode(PipelineMode.FULL)
 
     async def handle_text_input(self, text: str) -> None:
         """Handle text input from Tauri UI.
@@ -490,18 +595,35 @@ class Orchestrator:
             lang_name = lang_names.get(turn_language, turn_language)
             system_with_lang = (
                 f"{self._system_prompt}\n\n"
-                f"IMPORTANT: The user is currently speaking {lang_name}. "
-                f"You MUST respond in {lang_name}. "
-                f"NEVER use markdown, asterisks, bullet points, numbered lists, "
-                f"bold, italic, headers, or any formatting. Plain text only — "
-                f"this is a spoken conversation."
+                f"=== LANGUAGE OVERRIDE (highest priority) ===\n"
+                f"The user is now speaking {lang_name}.\n"
+                f"You MUST respond in {lang_name} and ONLY {lang_name}.\n"
+                f"This OVERRIDES any 'primary language' stated in your persona above.\n"
+                f"If previous turns in this conversation were in a different language, "
+                f"switch to {lang_name} starting with your very next reply and stay in "
+                f"{lang_name} until the user changes language themselves.\n\n"
+                f"FORMATTING: Plain conversational text only. No markdown, asterisks, "
+                f"bullet points, numbered lists, bold, italic, or headers. "
+                f"This is spoken conversation."
             )
             messages = [
                 {"role": "system", "content": system_with_lang},
             ]
-            for turn in self._dialogue[-10:]:  # last 10 turns
+            for turn in self._dialogue[-DIALOGUE_WINDOW:]:
                 messages.append({"role": turn.role, "content": turn.content})
-            logger.info("%s LLM context: %d messages", self._ts(), len(messages))
+
+            # Prepend a per-turn language hint to the LAST user message. Chat-
+            # template-safe (always part of user turn) and defends against
+            # history-language drift when a Croatian/Russian conversation is
+            # interrupted by a user turn in English etc.
+            if messages and messages[-1]["role"] == "user":
+                original = messages[-1]["content"]
+                messages[-1] = {
+                    "role": "user",
+                    "content": f"[Reply in {lang_name}.] {original}",
+                }
+            logger.info("%s LLM context: %d messages (per-turn lang=%s)",
+                        self._ts(), len(messages), turn_language)
 
             # Start TTS worker — consumes chunks from queue, synthesizes in order
             tts_chunk_idx = 0
@@ -555,12 +677,14 @@ class Orchestrator:
                     full_response.append(clean)
                     chunk_text = chunker.feed(clean)
                     if chunk_text:
-                        chunk_count += 1
-                        tts_queue.put_nowait((chunk_text, turn_language))
-                        logger.info("%s Chunk %d queued (%d chars): '%.60s'",
-                                    self._ts(), chunk_count, len(chunk_text), chunk_text)
-                        if self._state.state == PipelineState.PROCESSING:
-                            self._state.transition(PipelineState.SPEAKING)
+                        spoken = chunk_text.replace(CALL_END_MARKER, "").strip()
+                        if spoken:
+                            chunk_count += 1
+                            tts_queue.put_nowait((spoken, turn_language))
+                            logger.info("%s Chunk %d queued (%d chars): '%.60s'",
+                                        self._ts(), chunk_count, len(spoken), spoken)
+                            if self._state.state == PipelineState.PROCESSING:
+                                self._state.transition(PipelineState.SPEAKING)
 
             # Flush remaining text
             remaining = mood_parser.finalize()
@@ -568,17 +692,21 @@ class Orchestrator:
                 full_response.append(remaining)
                 chunk_text = chunker.feed(remaining)
                 if chunk_text:
-                    chunk_count += 1
-                    tts_queue.put_nowait((chunk_text, turn_language))
-                    logger.info("%s Chunk %d queued (finalize, %d chars): '%.60s'",
-                                self._ts(), chunk_count, len(chunk_text), chunk_text)
+                    spoken = chunk_text.replace(CALL_END_MARKER, "").strip()
+                    if spoken:
+                        chunk_count += 1
+                        tts_queue.put_nowait((spoken, turn_language))
+                        logger.info("%s Chunk %d queued (finalize, %d chars): '%.60s'",
+                                    self._ts(), chunk_count, len(spoken), spoken)
 
             final_chunk = chunker.flush()
             if final_chunk:
-                chunk_count += 1
-                tts_queue.put_nowait((final_chunk, turn_language))
-                logger.info("%s Chunk %d queued (flush, %d chars): '%.60s'",
-                            self._ts(), chunk_count, len(final_chunk), final_chunk)
+                spoken = final_chunk.replace(CALL_END_MARKER, "").strip()
+                if spoken:
+                    chunk_count += 1
+                    tts_queue.put_nowait((spoken, turn_language))
+                    logger.info("%s Chunk %d queued (flush, %d chars): '%.60s'",
+                                self._ts(), chunk_count, len(spoken), spoken)
 
             llm_elapsed = time.monotonic() - llm_start
             speed = token_count / llm_elapsed if llm_elapsed > 0 else 0
@@ -596,14 +724,19 @@ class Orchestrator:
             tts_wait = time.monotonic() - tts_wait_start
             logger.info("%s TTS worker finished (waited %.2fs)", self._ts(), tts_wait)
 
-            # Record assistant turn
+            # Record assistant turn (marker stripped before saving)
             response_text = "".join(full_response)
+            call_end_requested = CALL_END_MARKER in response_text
+            response_clean = response_text.replace(CALL_END_MARKER, "").strip()
             assistant_turn = Turn(
-                role="assistant", content=response_text, source="voice",
+                role="assistant", content=response_clean, source="voice",
                 timestamp=time.time(), mood=self._mood.mood,
             )
             self._dialogue.append(assistant_turn)
             self._mood.decay()
+            if call_end_requested:
+                logger.info("%s [CALL_END] marker detected — triggering end-of-call flow", self._ts())
+                asyncio.create_task(self._end_call(reason="model"))
 
             # Don't block on playback — transition to IDLE so user can
             # start a new turn while audio is still playing.  Barge-in

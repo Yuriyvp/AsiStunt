@@ -336,6 +336,12 @@ async def main() -> None:
                     emitter.emit({"event": "chunk_spoken", "text": text})
             orch._on_chunk_synthesized = on_chunk_synthesized
 
+            # Wire end-of-call event to IPC
+            def on_call_ended(reason: str, summary_path: str | None):
+                emitter.emit_signal("call_ended", reason=reason,
+                                    summary_path=summary_path or "")
+            orch._on_call_ended = on_call_ended
+
             # Wire LLM token streaming to IPC
             original_llm_stream = llm.stream
             async def stream_with_ipc(messages, sampling=None, thinking=False):
@@ -427,13 +433,24 @@ async def main() -> None:
         elif cmd_type == "mute_toggle":
             logger.info("Mute toggle")
             if orch and orch._audio:
-                # Toggle audio input mute
-                orch._audio._muted = not getattr(orch._audio, '_muted', False)
+                orch._audio.set_muted(not orch._audio._muted)
+
+        elif cmd_type == "set_mute":
+            muted = bool(cmd.get("muted", False))
+            logger.info("Set mute: %s", muted)
+            if orch and orch._audio:
+                orch._audio.set_muted(muted)
 
         elif cmd_type == "new_conversation":
             logger.info("New conversation")
             if orch:
-                orch._dialogue.clear()
+                orch.start_new_call()
+
+        elif cmd_type == "end_call":
+            logger.info("End call (manual)")
+            if orch:
+                task = asyncio.ensure_future(orch._end_call(reason="manual"))
+                task.add_done_callback(_log_task_exception)
 
         elif cmd_type == "list_audio_devices":
             logger.info("Audio device list requested")

@@ -6,9 +6,11 @@ using a chain of strategies, from most reliable to least:
 
   0. Single-word exact match    → definitive language markers
   1. Cyrillic script detection  → ru  (100% reliable)
-  2. South Slavic diacritics    → hr  (č/ć/š/ž/đ are definitive)
+  2a. German umlauts (ä/ö/ü/ß)  → de
+  2b. South Slavic diacritics   → hr  (č/ć/š/ž/đ)
+  2c. Italian accents (à/è/ì/ò/ù) → it
   3. langdetect filtered by supported languages + aliases
-  4. Common-word hints          → en vs hr fallback (≥1 match for short, ≥2 for long)
+  4. Common-word hints          → en/hr/de/it fallback (≥2 matches)
 
 Each layer is cheap (<1ms total) and requires no extra models.
 """
@@ -25,6 +27,13 @@ LANG_ALIASES: dict[str, str] = {
 
 # Characters unique to South Slavic Latin orthography.
 _SOUTH_SLAVIC_DIACRITICS = frozenset("čćšžđČĆŠŽĐ")
+
+# Characters unique to German within our supported language set.
+_GERMAN_DIACRITICS = frozenset("äöüßÄÖÜ")
+
+# Italian-specific accents (within our supported set — Croatian doesn't use these,
+# and French/Spanish aren't supported, so no cross-language confusion).
+_ITALIAN_ACCENTS = frozenset("àèéìíòóùúÀÈÉÌÍÒÓÙÚ")
 
 # Words that unambiguously identify a language even as a single word.
 # Used for very short utterances ("Yeah", "Да", "Da").
@@ -49,6 +58,19 @@ _DEFINITIVE_WORDS: dict[str, str] = {
     "da": "hr", "ne": "hr", "hvala": "hr", "molim": "hr",
     "bok": "hr", "dobar": "hr", "dobro": "hr", "naravno": "hr",
     "upravo": "hr", "tocno": "hr", "zanimljivo": "hr",
+    # German
+    "ja": "de", "nein": "de", "danke": "de", "bitte": "de",
+    "hallo": "de", "tschüss": "de", "guten": "de", "morgen": "de",
+    "abend": "de", "nacht": "de", "natürlich": "de", "vielleicht": "de",
+    "wirklich": "de", "wunderbar": "de", "interessant": "de",
+    "entschuldigung": "de", "richtig": "de", "warum": "de",
+    "ich": "de", "und": "de", "auch": "de", "schön": "de",
+    # Italian
+    "ciao": "it", "sì": "it", "grazie": "it", "prego": "it",
+    "buongiorno": "it", "buonasera": "it", "buonanotte": "it",
+    "arrivederci": "it", "salve": "it", "perfetto": "it",
+    "certo": "it", "bene": "it", "davvero": "it", "veramente": "it",
+    "scusi": "it", "scusa": "it", "piacere": "it",
 }
 
 # Common words that almost never appear in the other languages.
@@ -79,6 +101,29 @@ _WORD_HINTS: dict[str, frozenset[str]] = {
         "очень", "тоже", "ещё", "уже", "потому", "сейчас", "здесь",
         "там", "тут", "мне", "мой", "наш", "ваш", "его", "она",
         "они", "для", "при", "без", "все", "вот", "так",
+    }),
+    "de": frozenset({
+        "ich", "du", "er", "sie", "wir", "ihr", "und", "oder",
+        "aber", "nicht", "das", "die", "der", "den", "dem", "des",
+        "ein", "eine", "einen", "einem", "einer", "eines",
+        "ist", "sind", "war", "waren", "habe", "hat", "haben",
+        "wird", "werden", "wurde", "können", "kann", "möchte",
+        "auch", "noch", "schon", "sehr", "mehr", "wenig", "viel",
+        "mit", "ohne", "für", "von", "bei", "zu", "auf", "über",
+        "hier", "dort", "heute", "morgen", "gestern", "jetzt",
+        "ja", "nein", "danke", "bitte", "hallo", "guten",
+        "wirklich", "natürlich", "vielleicht", "warum",
+    }),
+    "it": frozenset({
+        "io", "tu", "lui", "lei", "noi", "voi", "loro",
+        "il", "la", "lo", "le", "gli", "un", "una", "uno",
+        "sono", "sei", "è", "siamo", "siete", "ho", "hai", "ha",
+        "abbiamo", "avete", "hanno", "era", "erano",
+        "che", "chi", "come", "dove", "quando", "perché", "cosa",
+        "anche", "ancora", "già", "molto", "poco", "tanto",
+        "con", "senza", "per", "da", "in", "su", "tra", "fra",
+        "qui", "lì", "oggi", "domani", "ieri", "adesso", "ora",
+        "sì", "ciao", "grazie", "prego", "bene", "buongiorno",
     }),
 }
 
@@ -127,13 +172,25 @@ def detect_language(
         logger.info("LANG DETECT: Cyrillic detected but no supported Cyrillic lang")
         return None
 
-    # --- Strategy 2: South Slavic diacritics → Croatian -----------------
+    # --- Strategy 2a: German umlauts → German ---------------------------
+    # ä/ö/ü/ß don't appear in HR/EN/RU/IT, so any occurrence is definitive.
+    if "de" in supported and any(c in _GERMAN_DIACRITICS for c in stripped):
+        logger.info("LANG DETECT: German umlauts → de (text='%s')", stripped[:60])
+        return "de"
+
+    # --- Strategy 2b: South Slavic diacritics → Croatian ----------------
     if any(c in _SOUTH_SLAVIC_DIACRITICS for c in stripped):
         for lang in ("hr", "bs", "sr"):
             if lang in supported:
                 logger.info("LANG DETECT: diacritics → %s (text='%s')",
                             lang, stripped[:60])
                 return lang
+
+    # --- Strategy 2c: Italian accents → Italian -------------------------
+    # à/è/é/ì/ò/ù don't appear in HR/EN/DE/RU within our supported set.
+    if "it" in supported and any(c in _ITALIAN_ACCENTS for c in stripped):
+        logger.info("LANG DETECT: Italian accents → it (text='%s')", stripped[:60])
+        return "it"
 
     # --- Strategy 0: Definitive single-word match (works at any length) ---
     # For very short text (1-2 words), a single definitive word is enough.

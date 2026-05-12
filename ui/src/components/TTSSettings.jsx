@@ -220,6 +220,8 @@ export default function TTSSettings({ sendCommand, onBack }) {
       en: 'The quick brown fox jumps over the lazy dog. Every morning I wake up and look out the window at the beautiful sunrise.',
       hr: 'Brza smeđa lisica preskače lijenog psa. Svako jutro se probudim i gledam kroz prozor u prekrasan izlazak sunca.',
       ru: 'Быстрая коричневая лиса перепрыгивает через ленивую собаку. Каждое утро я просыпаюсь и смотрю в окно на прекрасный рассвет.',
+      de: 'Der schnelle braune Fuchs springt über den faulen Hund. Jeden Morgen wache ich auf und schaue aus dem Fenster auf den wunderschönen Sonnenaufgang.',
+      it: 'La volpe marrone veloce salta sopra il cane pigro. Ogni mattina mi sveglio e guardo dalla finestra il bellissimo sorgere del sole.',
     };
     const text = testTexts[lang] || testTexts.en;
     setTestStates(prev => ({ ...prev, [lang]: 'playing' }));

@@ -2,7 +2,7 @@ language:
   default: hr
 llm:
   batch_size: 512
-  ctx_size: 8192
+  ctx_size: 32768
   flash_attn: true
   gpu_layers: 999
   model: models/gemma-4-26B-A4B-it-UD-IQ4_XS.gguf
@@ -22,8 +22,12 @@ session_restore_hours: 4
 voice:
   languages:
   - id: hr
-    reference_audio: /home/winers/voice-assistant/ViceClone/HR v3.wav
+    reference_audio: /home/winers/voice-assistant/ViceClone/HR5 Eva.wav
   - id: en
-    reference_audio: /home/winers/voice-assistant/ViceClone/EN v3.wav
+    reference_audio: /home/winers/voice-assistant/ViceClone/EN5 Eva.wav
   - id: ru
     reference_audio: /home/winers/voice-assistant/ViceClone/RU v3.wav
+  - id: de
+    reference_audio: /home/winers/voice-assistant/ViceClone/GE5 Eva.wav
+  - id: it
+    reference_audio: /home/winers/voice-assistant/ViceClone/IT5 Eva.wav

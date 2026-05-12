@@ -301,6 +301,68 @@ function ComponentStatus({ componentStates, sendCommand, compact = false }) {
   );
 }
 
+function CallControls({ callEnded, summaryPath, onEndCall, onNewCall }) {
+  const baseBtn = {
+    border: 'none',
+    borderRadius: 'var(--radius-pill)',
+    padding: '6px 14px',
+    fontSize: '0.78rem',
+    fontWeight: 500,
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+  };
+  return (
+    <div style={{
+      display: 'flex',
+      gap: '0.5rem',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: '4px 0 8px',
+    }}>
+      {!callEnded ? (
+        <button
+          onClick={onEndCall}
+          title="End the call now"
+          style={{
+            ...baseBtn,
+            background: 'transparent',
+            border: '1px solid var(--mic-muted, #ed6a5e)',
+            color: 'var(--mic-muted, #ed6a5e)',
+          }}
+        >
+          {'■'} End call
+        </button>
+      ) : (
+        <>
+          <button
+            onClick={onNewCall}
+            title="Start a new call"
+            style={{
+              ...baseBtn,
+              background: 'var(--mic-listening, #56c453)',
+              color: 'var(--bg-primary, #000)',
+            }}
+          >
+            {'☎'} Nova konverzacija
+          </button>
+          {summaryPath && (
+            <span style={{
+              fontSize: '0.6rem',
+              color: 'var(--text-muted)',
+              maxWidth: 220,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }} title={summaryPath}>
+              {'Saved: '}{summaryPath.split('/').pop()}
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function LastExchange({ lastUser, lastAssistant }) {
   const [hovered, setHovered] = useState(false);
 
@@ -366,6 +428,8 @@ export default function App() {
   const [energy, setEnergy] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const [turns, setTurns] = useState([]);
+  const [callEnded, setCallEnded] = useState(false);
+  const [summaryPath, setSummaryPath] = useState('');
   const [componentStates, setComponentStates] = useState({
     llm: 'idle', tts: 'idle', asr: 'idle', vad: 'idle',
   });
@@ -461,6 +525,13 @@ export default function App() {
         }
       }
 
+      // End-of-call signal from backend (Eva emitted [CALL_END] or user pressed End)
+      if (data.event === 'signal' && data.type === 'call_ended') {
+        setCallEnded(true);
+        setSummaryPath(data.summary_path || '');
+        setMicState('muted');
+      }
+
       // Chunk-by-chunk assistant speech — build response progressively
       if (data.event === 'chunk_spoken') {
         const chunkText = data.text || '';
@@ -538,14 +609,30 @@ export default function App() {
     return () => { unlisten.then(fn => fn()); };
   }, [sendCommand, expanded, toggleExpanded]);
 
-  // Mic state change
+  // End / new-call buttons
+  const handleEndCall = useCallback(() => {
+    sendCommand({ cmd: 'end_call' });
+  }, [sendCommand]);
+
+  const handleNewCall = useCallback(() => {
+    sendCommand({ cmd: 'new_conversation' });
+    setCallEnded(false);
+    setSummaryPath('');
+    setLastUser('');
+    setLastAssistant('');
+    setTurns([]);
+    setMicState('listening');
+  }, [sendCommand]);
+
+  // Mic state change — always issue an explicit mute/unmute alongside any
+  // mode change so the mic flag and the mode never desync.
   const handleMicChange = useCallback((newState) => {
     setMicState(newState);
-    if (newState === 'muted') {
-      sendCommand({ cmd: 'mute_toggle' });
-    } else if (newState === 'text') {
+    const shouldMute = newState === 'muted' || newState === 'text';
+    sendCommand({ cmd: 'set_mute', muted: shouldMute });
+    if (newState === 'text') {
       sendCommand({ cmd: 'set_mode', mode: 'TEXT_ONLY' });
-    } else {
+    } else if (newState !== 'muted') {
       sendCommand({ cmd: 'set_mode', mode: 'FULL' });
     }
   }, [sendCommand]);
@@ -693,6 +780,13 @@ export default function App() {
           <MicPill micState={micState} onStateChange={handleMicChange} />
         </div>
 
+        <CallControls
+          callEnded={callEnded}
+          summaryPath={summaryPath}
+          onEndCall={handleEndCall}
+          onNewCall={handleNewCall}
+        />
+
         <LastExchange lastUser={lastUser} lastAssistant={lastAssistant} />
 
         {contextMenu && (
@@ -784,6 +878,13 @@ export default function App() {
 
       <ComponentStatus componentStates={componentStates} sendCommand={sendCommand} />
       <MoodGlow mood={mood} />
+
+      <CallControls
+        callEnded={callEnded}
+        summaryPath={summaryPath}
+        onEndCall={handleEndCall}
+        onNewCall={handleNewCall}
+      />
 
       {/* Transcript */}
       <Transcript turns={turns} />

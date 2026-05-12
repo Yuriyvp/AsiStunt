@@ -190,11 +190,21 @@ class AudioInput:
         self._chunk_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=100)
         self._stream: sd.InputStream | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._muted: bool = False
+
+    def set_muted(self, muted: bool) -> None:
+        """Mute or unmute the mic. Muted = audio frames are dropped at the
+        sounddevice callback, so VAD/ASR see nothing while muted."""
+        if muted != self._muted:
+            logger.info("Mic %s", "MUTED" if muted else "UNMUTED")
+        self._muted = muted
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
         """sounddevice callback — runs in a separate thread."""
         if status:
             logger.warning("sounddevice status: %s", status)
+        if self._muted:
+            return
         chunk = indata[:, 0].copy()
         try:
             self._loop.call_soon_threadsafe(self._chunk_queue.put_nowait, chunk)

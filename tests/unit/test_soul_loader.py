@@ -13,8 +13,8 @@ class TestLoadSoul:
     def test_load_default_soul(self):
         """Load the real default.soul.yaml (personality only)."""
         soul = load_soul(PROJECT_ROOT / "soul" / "default.soul.yaml")
-        assert soul.name == "Joi"
-        assert "warm" in soul.personality or "Peka" in soul.personality
+        assert soul.name == "Eva Novak"
+        assert "warm" in soul.personality or "Dogma" in soul.personality
 
     def test_load_valid_fixture(self):
         """Load a valid test fixture — only personality fields matter."""
@@ -68,10 +68,10 @@ class TestLoadSettings:
         """Load the real config/settings.yaml."""
         s = load_settings(PROJECT_ROOT / "config" / "settings.yaml")
         assert s.llm_model != ""
-        assert s.llm_ctx_size == 8192
+        assert s.llm_ctx_size == 32768
         assert s.llm_flash_attn is True
-        assert len(s.voice_languages) == 3
-        assert s.default_language == "ru"
+        assert len(s.voice_languages) == 5
+        assert s.default_language == "hr"
         assert s.sampling["temperature"] == 0.75
 
     def test_voice_languages_parsed(self):
